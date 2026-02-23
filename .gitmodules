@@ -1,0 +1,4 @@
+[submodule "docs/gh-pages"]
+	path = docs/gh-pages
+	url = ssh://git@github.com/tjst-t/qemu-bmc.git
+	branch = gh-pages
