@@ -2,14 +2,18 @@ package redfish
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/tjst-t/qemu-bmc/internal/qmp"
+	"github.com/steigr/qemu-bmc/internal/machine"
+	"github.com/steigr/qemu-bmc/internal/qmp"
 )
 
 func TestGetManagerCollection(t *testing.T) {
@@ -76,19 +80,65 @@ func TestGetVirtualMedia_NotInserted(t *testing.T) {
 }
 
 func TestInsertVirtualMedia(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Range") == "bytes=0-0" {
+			w.Header().Set("Content-Range", "bytes 0-0/10")
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write([]byte("0"))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "0123456789")
+	}))
+	defer backend.Close()
+
 	mock := newMockMachine(qmp.StatusRunning)
 	srv := NewServer(mock, "", "", "")
 
-	body := `{"Image": "http://example.com/boot.iso", "Inserted": true}`
+	body := fmt.Sprintf(`{"Image": %q, "Inserted": true}`, backend.URL+"/boot.iso")
 	req := httptest.NewRequest("POST",
 		"/redfish/v1/Managers/1/VirtualMedia/CD1/Actions/VirtualMedia.InsertMedia",
 		strings.NewReader(body))
+	req.Host = "localhost:8080"
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, "http://example.com/boot.iso", mock.LastInsertedMedia())
+	assert.Contains(t, mock.LastInsertedMedia(), "/redfish/v1/Managers/1/VirtualMedia/CD1/Proxy?image=")
+	assert.Contains(t, mock.LastInsertedMedia(), url.QueryEscape(backend.URL+"/boot.iso"))
+	assert.Contains(t, mock.LastInsertedMedia(), "http://127.0.0.1:8080/")
+}
+
+func TestInsertVirtualMedia_FirstInsertWithBootOnceCd_TriggersRestart(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Range") == "bytes=0-0" {
+			w.Header().Set("Content-Range", "bytes 0-0/10")
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write([]byte("0"))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "0123456789")
+	}))
+	defer backend.Close()
+
+	mock := newMockMachine(qmp.StatusRunning)
+	_ = mock.SetBootOverride(machine.BootOverride{Enabled: "Once", Target: "Cd", Mode: "UEFI"})
+	srv := NewServer(mock, "", "", "")
+
+	body := fmt.Sprintf(`{"Image": %q, "Inserted": true}`, backend.URL+"/boot.iso")
+	req := httptest.NewRequest("POST",
+		"/redfish/v1/Managers/1/VirtualMedia/CD1/Actions/VirtualMedia.InsertMedia",
+		strings.NewReader(body))
+	req.Host = "localhost:8080"
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, mock.Calls(), "InsertMedia")
+	assert.Contains(t, mock.Calls(), "ForceRestart")
 }
 
 func TestInsertVirtualMedia_EmptyImage(t *testing.T) {
@@ -121,14 +171,27 @@ func TestEjectVirtualMedia(t *testing.T) {
 }
 
 func TestVirtualMedia_InsertThenGet(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Range") == "bytes=0-0" {
+			w.Header().Set("Content-Range", "bytes 0-0/10")
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write([]byte("0"))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "0123456789")
+	}))
+	defer backend.Close()
+
 	mock := newMockMachine(qmp.StatusRunning)
 	srv := NewServer(mock, "", "", "")
 
 	// Insert
-	body := `{"Image": "http://example.com/boot.iso", "Inserted": true}`
+	body := fmt.Sprintf(`{"Image": %q, "Inserted": true}`, backend.URL+"/boot.iso")
 	insertReq := httptest.NewRequest("POST",
 		"/redfish/v1/Managers/1/VirtualMedia/CD1/Actions/VirtualMedia.InsertMedia",
 		strings.NewReader(body))
+	insertReq.Host = "localhost:8080"
 	insertReq.Header.Set("Content-Type", "application/json")
 	w1 := httptest.NewRecorder()
 	srv.ServeHTTP(w1, insertReq)
@@ -142,5 +205,177 @@ func TestVirtualMedia_InsertThenGet(t *testing.T) {
 	var vm VirtualMedia
 	json.Unmarshal(w2.Body.Bytes(), &vm)
 	assert.True(t, vm.Inserted)
-	assert.Equal(t, "http://example.com/boot.iso", vm.Image)
+	assert.Equal(t, backend.URL+"/boot.iso", vm.Image)
+}
+
+func TestVirtualMediaProxy_PassThroughRange(t *testing.T) {
+	backendBody := []byte("0123456789")
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rangeHeader := r.Header.Get("Range")
+		if rangeHeader == "bytes=0-0" {
+			w.Header().Set("Content-Range", "bytes 0-0/10")
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(backendBody[:1])
+			return
+		}
+		if rangeHeader == "bytes=2-5" {
+			w.Header().Set("Content-Range", "bytes 2-5/10")
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(backendBody[2:6])
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(backendBody)
+	}))
+	defer backend.Close()
+
+	mock := newMockMachine(qmp.StatusRunning)
+	srv := NewServer(mock, "", "", "")
+
+	proxyPath := fmt.Sprintf("/redfish/v1/Managers/1/VirtualMedia/CD1/Proxy?image=%s", url.QueryEscape(backend.URL+"/boot.iso"))
+	req := httptest.NewRequest("GET", proxyPath, nil)
+	req.Header.Set("Range", "bytes=2-5")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusPartialContent, w.Code)
+	assert.Equal(t, "bytes 2-5/10", w.Header().Get("Content-Range"))
+	assert.Equal(t, "2345", w.Body.String())
+}
+
+func TestVirtualMediaProxy_CachesWhenBackendHasNoRangeSupport(t *testing.T) {
+	backendBody := "abcdefghijklmnopqrstuvwxyz"
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, backendBody)
+	}))
+	defer backend.Close()
+
+	mock := newMockMachine(qmp.StatusRunning)
+	srv := NewServer(mock, "", "", "")
+
+	proxyPath := fmt.Sprintf("/redfish/v1/Managers/1/VirtualMedia/CD1/Proxy?image=%s", url.QueryEscape(backend.URL+"/boot.iso"))
+
+	req1 := httptest.NewRequest("GET", proxyPath, nil)
+	req1.Header.Set("Range", "bytes=10-15")
+	w1 := httptest.NewRecorder()
+	srv.ServeHTTP(w1, req1)
+
+	assert.Equal(t, http.StatusPartialContent, w1.Code)
+	assert.Equal(t, "klmnop", w1.Body.String())
+
+	req2 := httptest.NewRequest("GET", proxyPath, nil)
+	req2.Header.Set("Range", "bytes=0-2")
+	w2 := httptest.NewRecorder()
+	srv.ServeHTTP(w2, req2)
+
+	assert.Equal(t, http.StatusPartialContent, w2.Code)
+	assert.Equal(t, "abc", w2.Body.String())
+}
+
+func TestVirtualMediaProxy_CachesWhenBackendClaimsAcceptRangesButIgnoresRange(t *testing.T) {
+	backendBody := "abcdefghijklmnopqrstuvwxyz"
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, backendBody)
+	}))
+	defer backend.Close()
+
+	mock := newMockMachine(qmp.StatusRunning)
+	srv := NewServer(mock, "", "", "")
+
+	proxyPath := fmt.Sprintf("/redfish/v1/Managers/1/VirtualMedia/CD1/Proxy?image=%s", url.QueryEscape(backend.URL+"/boot.iso"))
+
+	// A range request must still succeed via cached serving even when backend advertises
+	// Accept-Ranges but does not actually return 206 for ranged reads.
+	req := httptest.NewRequest("GET", proxyPath, nil)
+	req.Header.Set("Range", "bytes=5-8")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusPartialContent, w.Code)
+	assert.Equal(t, "fghi", w.Body.String())
+}
+
+func TestVirtualMediaProxy_FallsBackToCacheWhenRangedReadReturns200(t *testing.T) {
+	backendBody := "abcdefghijklmnopqrstuvwxyz"
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rangeHeader := r.Header.Get("Range")
+		if rangeHeader == "bytes=0-0" {
+			w.Header().Set("Content-Range", "bytes 0-0/26")
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = io.WriteString(w, "a")
+			return
+		}
+		// Simulate a backend that probes as ranged-capable, but intermittently
+		// ignores later Range requests by returning a full-body 200.
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, backendBody)
+	}))
+	defer backend.Close()
+
+	mock := newMockMachine(qmp.StatusRunning)
+	srv := NewServer(mock, "", "", "")
+
+	proxyPath := fmt.Sprintf("/redfish/v1/Managers/1/VirtualMedia/CD1/Proxy?image=%s", url.QueryEscape(backend.URL+"/boot.iso"))
+	req := httptest.NewRequest("GET", proxyPath, nil)
+	req.Header.Set("Range", "bytes=10-12")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusPartialContent, w.Code)
+	assert.Equal(t, "klm", w.Body.String())
+	assert.Equal(t, "bytes", w.Header().Get("Accept-Ranges"))
+}
+
+func TestVirtualMediaProxy_AllowsAccessWithoutAuthWhenServerAuthEnabled(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Range", "bytes 0-0/10")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = io.WriteString(w, "0")
+	}))
+	defer backend.Close()
+
+	mock := newMockMachine(qmp.StatusRunning)
+	srv := NewServer(mock, "admin", "password", "")
+
+	proxyPath := fmt.Sprintf("/redfish/v1/Managers/1/VirtualMedia/CD1/Proxy?image=%s", url.QueryEscape(backend.URL+"/boot.iso"))
+	req := httptest.NewRequest("GET", proxyPath, nil)
+	req.Header.Set("Range", "bytes=0-0")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusPartialContent, w.Code)
+	assert.Equal(t, "0", w.Body.String())
+}
+
+func TestInsertVirtualMedia_ProxyURLDoesNotEmbedCredentials(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Range") == "bytes=0-0" {
+			w.Header().Set("Content-Range", "bytes 0-0/10")
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write([]byte("0"))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "0123456789")
+	}))
+	defer backend.Close()
+
+	mock := newMockMachine(qmp.StatusRunning)
+	srv := NewServer(mock, "admin", "password", "")
+
+	body := fmt.Sprintf(`{"Image": %q, "Inserted": true}`, backend.URL+"/boot.iso")
+	req := httptest.NewRequest("POST",
+		"/redfish/v1/Managers/1/VirtualMedia/CD1/Actions/VirtualMedia.InsertMedia",
+		strings.NewReader(body))
+	req.Host = "localhost:8080"
+	req.Header.Set("Content-Type", "application/json")
+	req.SetBasicAuth("admin", "password")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.NotContains(t, mock.LastInsertedMedia(), "admin:password@")
 }

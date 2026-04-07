@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
+	"strconv"
+	"syscall"
 )
 
 func (s *Server) handleManagerCollection(w http.ResponseWriter, r *http.Request) {
@@ -52,10 +55,10 @@ func (s *Server) handleGetVirtualMedia(w http.ResponseWriter, r *http.Request) {
 		ID:           "CD1",
 		Name:         "Virtual CD",
 		MediaTypes:   []string{"CD", "DVD"},
-		Image:        s.currentMedia,
-		Inserted:     s.currentMedia != "",
+		Image:        s.originMedia,
+		Inserted:     s.originMedia != "",
 		ConnectedVia: func() string {
-			if s.currentMedia != "" {
+			if s.originMedia != "" {
 				return "URI"
 			}
 			return "NotConnected"
@@ -70,6 +73,10 @@ func (s *Server) handleGetVirtualMedia(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleInsertMedia(w http.ResponseWriter, r *http.Request) {
+	wasEmpty := s.originMedia == ""
+	boot := s.machine.GetBootOverride()
+	restartOnInsert := wasEmpty && boot.Enabled == "Once" && boot.Target == "Cd"
+
 	var req InsertMediaRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "MalformedJSON", "Invalid request body")
@@ -81,16 +88,52 @@ func (s *Server) handleInsertMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Track media state in BMC. QMP insertion is best-effort since
-	// the URL may not be accessible until boot time.
-	if err := s.machine.InsertMedia(req.Image); err != nil {
-		log.Printf("VirtualMedia: QMP insert failed (non-fatal): %v", err)
+	proxyURL := s.buildProxyURL(r, req.Image)
+	source := s.getProxySource(req.Image)
+	if err := source.ensureReady(s.mediaProxyClient); err != nil {
+		writeError(w, http.StatusBadGateway, "InternalError", "failed to prepare virtual media proxy")
+		return
 	}
 
-	s.currentMedia = req.Image
+	// Track media state in BMC. QMP insertion is best-effort.
+	if err := s.machine.InsertMedia(proxyURL); err != nil {
+		log.Printf("VirtualMedia: QMP insert failed (non-fatal, proxyURL=%s): %v", proxyURL, err)
+	}
+	if restartOnInsert {
+		if !signalGovernanceReset() {
+			if err := s.machine.Reset("ForceRestart"); err != nil {
+				log.Printf("VirtualMedia: ForceRestart after first insert with one-time CD boot failed: %v", err)
+			}
+		}
+	}
+
+	s.currentMedia = proxyURL
+	s.originMedia = req.Image
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func signalGovernanceReset() bool {
+	pidStr := os.Getenv("QEMU_BMC_GOVERNANCE_PID")
+	if pidStr == "" {
+		return false
+	}
+
+	pid, err := strconv.Atoi(pidStr)
+	if err != nil || pid <= 1 {
+		return false
+	}
+
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	if err := proc.Signal(syscall.SIGUSR2); err != nil {
+		return false
+	}
+	log.Printf("VirtualMedia: requested governance reset via SIGUSR2 (pid=%d)", pid)
+	return true
 }
 
 func (s *Server) handleEjectMedia(w http.ResponseWriter, r *http.Request) {
@@ -99,6 +142,7 @@ func (s *Server) handleEjectMedia(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.currentMedia = ""
+	s.originMedia = ""
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})

@@ -2,11 +2,12 @@ package redfish
 
 import (
 	"net/http"
+	"sync"
 
 	"github.com/gorilla/mux"
-	"github.com/tjst-t/qemu-bmc/internal/machine"
-	"github.com/tjst-t/qemu-bmc/internal/novnc"
-	"github.com/tjst-t/qemu-bmc/internal/qmp"
+	"github.com/steigr/qemu-bmc/internal/machine"
+	"github.com/steigr/qemu-bmc/internal/novnc"
+	"github.com/steigr/qemu-bmc/internal/qmp"
 )
 
 // MachineInterface defines what the Redfish server needs from the machine layer
@@ -22,22 +23,28 @@ type MachineInterface interface {
 
 // Server is the Redfish HTTP server
 type Server struct {
-	router       *mux.Router
-	machine      MachineInterface
-	user         string
-	pass         string
-	currentMedia string
-	novncHandler *novnc.Handler
+	router            *mux.Router
+	machine           MachineInterface
+	user              string
+	pass              string
+	currentMedia      string
+	originMedia       string
+	novncHandler      *novnc.Handler
+	mediaProxyClient  *http.Client
+	mediaProxySources map[string]*mediaProxySource
+	mediaProxyMu      sync.Mutex
 }
 
 // NewServer creates a new Redfish server
 func NewServer(m MachineInterface, user, pass, vncAddr string) *Server {
 	s := &Server{
-		router:       mux.NewRouter(),
-		machine:      m,
-		user:         user,
-		pass:         pass,
-		novncHandler: novnc.NewHandler(vncAddr),
+		router:            mux.NewRouter(),
+		machine:           m,
+		user:              user,
+		pass:              pass,
+		novncHandler:      novnc.NewHandler(vncAddr),
+		mediaProxyClient:  newMediaProxyHTTPClient(),
+		mediaProxySources: make(map[string]*mediaProxySource),
 	}
 	s.setupRoutes()
 	return s
@@ -79,6 +86,8 @@ func (s *Server) setupRoutes() {
 	s.router.HandleFunc("/redfish/v1/Managers/{id}/VirtualMedia/{vmid}/Actions/VirtualMedia.InsertMedia/", s.handleInsertMedia).Methods("POST")
 	s.router.HandleFunc("/redfish/v1/Managers/{id}/VirtualMedia/{vmid}/Actions/VirtualMedia.EjectMedia", s.handleEjectMedia).Methods("POST")
 	s.router.HandleFunc("/redfish/v1/Managers/{id}/VirtualMedia/{vmid}/Actions/VirtualMedia.EjectMedia/", s.handleEjectMedia).Methods("POST")
+	s.router.HandleFunc("/redfish/v1/Managers/{id}/VirtualMedia/{vmid}/Proxy", s.handleVirtualMediaProxy).Methods("GET", "HEAD")
+	s.router.HandleFunc("/redfish/v1/Managers/{id}/VirtualMedia/{vmid}/Proxy/", s.handleVirtualMediaProxy).Methods("GET", "HEAD")
 
 	// Chassis
 	s.router.HandleFunc("/redfish/v1/Chassis", s.handleChassisCollection).Methods("GET")
