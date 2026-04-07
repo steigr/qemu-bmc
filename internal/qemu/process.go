@@ -2,6 +2,7 @@ package qemu
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"sync"
 	"syscall"
@@ -56,6 +57,8 @@ func (p *processManager) Start(bootTarget string) error {
 
 	args := ApplyBootOverride(p.baseArgs, bootTarget)
 	p.cmd = p.cmdFactory(p.binary, args)
+	p.cmd.Stdout = os.Stdout
+	p.cmd.Stderr = os.Stderr
 	p.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	if err := p.cmd.Start(); err != nil {

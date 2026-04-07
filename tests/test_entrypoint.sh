@@ -137,7 +137,8 @@ test_cdrom_attached() {
     wait_for_qemu_running 30
     local cmdline
     cmdline=$(container_exec cat /proc/$(get_qemu_pid)/cmdline 2>/dev/null | tr '\0' ' ')
-    assert_contains "$cmdline" "-cdrom" "CD-ROM should be attached with -cdrom"
+    assert_contains "$cmdline" "ide-cd" "CD-ROM should be attached as an explicit device"
+    assert_contains "$cmdline" "bootindex=1" "CD-ROM device should be first in boot priority"
     rm -rf "$tmpdir"
 }
 

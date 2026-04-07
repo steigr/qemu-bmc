@@ -66,6 +66,10 @@ func ApplyDefaults(args []string) []string {
 
 	for _, d := range defaultArgs {
 		if !present[d.flag] {
+			// Skip -vga when -nographic is used
+			if d.flag == "-vga" && present["-nographic"] {
+				continue
+			}
 			result = append(result, d.defaults...)
 		}
 	}
@@ -92,8 +96,17 @@ func BuildCommandLine(userArgs []string, opts BuildOptions) ([]string, error) {
 		"-qmp", fmt.Sprintf("unix:%s,server,nowait", opts.QMPSocketPath),
 	)
 
-	// Inject display none
-	args = append(args, "-display", "none")
+	// Inject display none (unless -nographic already set)
+	hasNographic := false
+	for _, a := range args {
+		if a == "-nographic" {
+			hasNographic = true
+			break
+		}
+	}
+	if !hasNographic {
+		args = append(args, "-display", "none")
+	}
 
 	// Inject serial console
 	if opts.SerialAddr != "" {

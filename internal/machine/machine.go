@@ -6,8 +6,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tjst-t/qemu-bmc/internal/qmp"
+	"github.com/steigr/qemu-bmc/internal/qmp"
 )
+
+var bootTargetToRuntimeOrder = map[string]string{
+	"Pxe": "n",
+	"Hdd": "c",
+	"Cd":  "d",
+}
 
 // PowerState represents the power state of the VM
 type PowerState string
@@ -100,8 +106,10 @@ func (m *Machine) getPowerStateProcess() (PowerState, error) {
 	}
 
 	switch status {
-	case qmp.StatusRunning, qmp.StatusPaused:
+	case qmp.StatusRunning:
 		return PowerOn, nil
+	case qmp.StatusPaused:
+		return PowerOff, nil
 	case qmp.StatusShutdown:
 		// Guest has shut down — stop the process
 		m.processManager.Stop(30 * time.Second)
@@ -152,15 +160,21 @@ func (m *Machine) resetLegacy(resetType string) error {
 		}
 		return m.qmpClient.Cont()
 	case "ForceOff":
-		return m.qmpClient.Stop()
+		return m.resetThenStop()
 	case "GracefulShutdown":
 		// Send ACPI shutdown signal, then stop the VM.
 		// The stop ensures the VM halts even without a guest OS.
 		m.qmpClient.SystemPowerdown()
 		return m.qmpClient.Stop()
 	case "ForceRestart":
+		if err := m.applyRuntimeBootOverride(); err != nil {
+			return err
+		}
 		return m.qmpClient.SystemReset()
 	case "GracefulRestart":
+		if err := m.applyRuntimeBootOverride(); err != nil {
+			return err
+		}
 		return m.qmpClient.SystemReset()
 	default:
 		return fmt.Errorf("unsupported reset type: %s", resetType)
@@ -189,14 +203,15 @@ func (m *Machine) resetProcessMode(resetType string) error {
 		return nil
 
 	case "ForceOff":
-		if err := m.qmpClient.Quit(); err != nil {
-			// QMP may not be connected; force-kill the process
-			log.Printf("QMP quit failed (%v), killing process", err)
-			return m.processManager.Stop(30 * time.Second)
-		}
-		return m.processManager.WaitForExit(30 * time.Second)
+		return m.resetThenStop()
 
 	case "ForceRestart":
+		if m.shouldColdRestartForBootOverride() {
+			return m.coldRestartProcessWithBootOverride()
+		}
+		if err := m.applyRuntimeBootOverride(); err != nil {
+			return err
+		}
 		return m.qmpClient.SystemReset()
 
 	case "GracefulShutdown":
@@ -209,6 +224,9 @@ func (m *Machine) resetProcessMode(resetType string) error {
 		return nil
 
 	case "GracefulRestart":
+		if m.shouldColdRestartForBootOverride() {
+			return m.coldRestartProcessWithBootOverride()
+		}
 		if err := m.qmpClient.SystemPowerdown(); err != nil {
 			return err
 		}
@@ -222,6 +240,78 @@ func (m *Machine) resetProcessMode(resetType string) error {
 	default:
 		return fmt.Errorf("unsupported reset type: %s", resetType)
 	}
+}
+
+func (m *Machine) shouldColdRestartForBootOverride() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.bootOverride.Enabled != "Disabled" && m.bootOverride.Target != "None"
+}
+
+func (m *Machine) coldRestartProcessWithBootOverride() error {
+	m.mu.RLock()
+	target := m.bootOverride.Target
+	enabled := m.bootOverride.Enabled
+	m.mu.RUnlock()
+
+	if err := m.processManager.Stop(30 * time.Second); err != nil {
+		return fmt.Errorf("stopping QEMU for boot override restart: %w", err)
+	}
+	if err := m.processManager.Start(target); err != nil {
+		return fmt.Errorf("starting QEMU for boot override restart: %w", err)
+	}
+	if err := m.waitForQMP(30 * time.Second); err != nil {
+		return fmt.Errorf("waiting for QMP after boot override restart: %w", err)
+	}
+
+	if enabled == "Once" {
+		m.ConsumeBootOnce()
+	}
+
+	return nil
+}
+
+func (m *Machine) applyRuntimeBootOverride() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.bootOverride.Enabled == "Disabled" || m.bootOverride.Target == "None" {
+		return nil
+	}
+
+	order, ok := bootTargetToRuntimeOrder[m.bootOverride.Target]
+	if !ok {
+		// BiosSetup and unsupported targets are start-time only.
+		return nil
+	}
+
+	if err := m.qmpClient.SetBootOrder(order); err != nil {
+		return fmt.Errorf("setting runtime boot order: %w", err)
+	}
+
+	if m.bootOverride.Enabled == "Once" {
+		m.bootOverride.Enabled = "Disabled"
+		m.bootOverride.Target = "None"
+	}
+
+	return nil
+}
+
+func (m *Machine) resetThenStop() error {
+	if err := m.qmpClient.SystemReset(); err != nil {
+		return err
+	}
+
+	// Let QEMU process the reset command before forcing a halt.
+	for i := 0; i < 5; i++ {
+		status, err := m.qmpClient.QueryStatus()
+		if err == nil && status == qmp.StatusRunning {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	return m.qmpClient.Stop()
 }
 
 // waitForQMP polls qmpClient.Connect() until success or timeout.

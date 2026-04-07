@@ -21,12 +21,15 @@ QEMU_ARGS="$QEMU_ARGS -m ${VM_MEMORY:-2048} -smp ${VM_CPUS:-2}"
 # Disk
 VM_DISK="${VM_DISK:-/vm/disk.qcow2}"
 if [ -n "$VM_DISK" ] && [ -f "$VM_DISK" ]; then
-    QEMU_ARGS="$QEMU_ARGS -drive file=$VM_DISK,format=qcow2,if=virtio"
+    QEMU_ARGS="$QEMU_ARGS -drive if=none,id=disk0,file=$VM_DISK,format=qcow2"
+    QEMU_ARGS="$QEMU_ARGS -device virtio-blk-pci,drive=disk0,id=vdisk0,bootindex=2"
 fi
 
 # CD-ROM
 if [ -n "$VM_CDROM" ] && [ -f "$VM_CDROM" ]; then
-    QEMU_ARGS="$QEMU_ARGS -cdrom $VM_CDROM"
+    QEMU_ARGS="$QEMU_ARGS -drive if=none,id=ide0-cd0,media=cdrom,file=$VM_CDROM,readonly=on"
+    QEMU_ARGS="$QEMU_ARGS -device ich9-ahci,id=ahci0"
+    QEMU_ARGS="$QEMU_ARGS -device ide-cd,drive=ide0-cd0,bus=ahci0.0,bootindex=1"
 fi
 
 # Boot device
@@ -34,7 +37,6 @@ BOOT_PARAM="${VM_BOOT:-c}"
 if [ "${VM_BOOT_MENU_TIMEOUT:-0}" -gt 0 ] 2>/dev/null; then
     BOOT_PARAM="$BOOT_PARAM,menu=on,splash-time=${VM_BOOT_MENU_TIMEOUT}"
 fi
-QEMU_ARGS="$QEMU_ARGS -boot $BOOT_PARAM"
 
 # Boot mode (BIOS/UEFI)
 case "${VM_BOOT_MODE:-bios}" in
@@ -49,11 +51,13 @@ case "${VM_BOOT_MODE:-bios}" in
         QEMU_ARGS="$QEMU_ARGS -drive if=pflash,format=raw,file=$OVMF_VARS"
         ;;
     bios)
+        QEMU_ARGS="$QEMU_ARGS -boot $BOOT_PARAM"
         # SGA device for serial console in BIOS mode
         QEMU_ARGS="$QEMU_ARGS -device sga"
         ;;
     *)
         echo "WARN: Unknown VM_BOOT_MODE '${VM_BOOT_MODE}', defaulting to bios" >&2
+        QEMU_ARGS="$QEMU_ARGS -boot $BOOT_PARAM"
         QEMU_ARGS="$QEMU_ARGS -device sga"
         ;;
 esac

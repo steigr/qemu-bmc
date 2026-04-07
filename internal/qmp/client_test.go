@@ -76,6 +76,22 @@ func TestClient_SystemReset(t *testing.T) {
 	assert.Equal(t, "system_reset", mockQMP.LastCommand())
 }
 
+func TestClient_SetBootOrder(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "qmp.sock")
+	mockQMP := newMockQMPServer(t, socketPath)
+	defer mockQMP.Close()
+
+	time.Sleep(50 * time.Millisecond)
+
+	client, err := NewClient(socketPath)
+	require.NoError(t, err)
+	defer client.Close()
+
+	err = client.SetBootOrder("d")
+	require.NoError(t, err)
+	assert.Contains(t, []string{"set_boot_device", "human-monitor-command"}, mockQMP.LastCommand())
+}
+
 func TestClient_Quit(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "qmp.sock")
 	mockQMP := newMockQMPServer(t, socketPath)

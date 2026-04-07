@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/steigr/qemu-bmc/internal/qmp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/tjst-t/qemu-bmc/internal/qmp"
 )
 
 // mockQMPClient implements qmp.Client for testing
@@ -45,6 +45,11 @@ func (m *mockQMPClient) SystemPowerdown() error {
 
 func (m *mockQMPClient) SystemReset() error {
 	m.calls = append(m.calls, "SystemReset")
+	return nil
+}
+
+func (m *mockQMPClient) SetBootOrder(_ string) error {
+	m.calls = append(m.calls, "SetBootOrder")
 	return nil
 }
 
@@ -173,7 +178,8 @@ func TestReset_ForceOff(t *testing.T) {
 
 	err := m.Reset("ForceOff")
 	require.NoError(t, err)
-	assert.Contains(t, mock.Calls(), "Stop")
+	assert.Equal(t, "SystemReset", mock.Calls()[0])
+	assert.Equal(t, "Stop", mock.Calls()[len(mock.Calls())-1])
 }
 
 func TestReset_GracefulShutdown(t *testing.T) {
@@ -192,6 +198,23 @@ func TestReset_ForceRestart(t *testing.T) {
 	err := m.Reset("ForceRestart")
 	require.NoError(t, err)
 	assert.Contains(t, mock.Calls(), "SystemReset")
+}
+
+func TestReset_ForceRestart_AppliesCdBootOnce(t *testing.T) {
+	mock := newMockQMPClient(qmp.StatusRunning)
+	m := New(mock)
+
+	err := m.SetBootOverride(BootOverride{Enabled: "Once", Target: "Cd", Mode: "UEFI"})
+	require.NoError(t, err)
+
+	err = m.Reset("ForceRestart")
+	require.NoError(t, err)
+	assert.Contains(t, mock.Calls(), "SetBootOrder")
+	assert.Contains(t, mock.Calls(), "SystemReset")
+
+	boot := m.GetBootOverride()
+	assert.Equal(t, "Disabled", boot.Enabled)
+	assert.Equal(t, "None", boot.Target)
 }
 
 func TestReset_GracefulRestart(t *testing.T) {
@@ -376,22 +399,17 @@ func TestProcessMode_Reset_On_ConsumesBootOnce(t *testing.T) {
 	assert.Equal(t, "None", boot.Target)
 }
 
-func TestProcessMode_Reset_ForceOff_Quits(t *testing.T) {
+func TestProcessMode_Reset_ForceOff_ResetsAndStops(t *testing.T) {
 	qmpMock := newMockQMPClient(qmp.StatusRunning)
 	pm := newMockProcessManager(true)
 	m := NewWithProcess(qmpMock, pm)
 
-	// Simulate the process exiting shortly after Quit is sent
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		pm.running = false
-		close(pm.exitCh)
-	}()
-
 	err := m.Reset("ForceOff")
 	require.NoError(t, err)
-	assert.Contains(t, qmpMock.Calls(), "Quit")
-	assert.Contains(t, pm.calls, "WaitForExit")
+	assert.Equal(t, "SystemReset", qmpMock.Calls()[0])
+	assert.Equal(t, "Stop", qmpMock.Calls()[len(qmpMock.Calls())-1])
+	assert.NotContains(t, pm.calls, "WaitForExit")
+	assert.NotContains(t, pm.calls, "Stop")
 }
 
 func TestProcessMode_Reset_ForceRestart_SystemReset(t *testing.T) {
@@ -399,9 +417,31 @@ func TestProcessMode_Reset_ForceRestart_SystemReset(t *testing.T) {
 	pm := newMockProcessManager(true)
 	m := NewWithProcess(qmpMock, pm)
 
+	err := m.SetBootOverride(BootOverride{Enabled: "Once", Target: "Cd", Mode: "UEFI"})
+	require.NoError(t, err)
+
+	err = m.Reset("ForceRestart")
+	require.NoError(t, err)
+	assert.Contains(t, pm.calls, "Stop")
+	assert.Contains(t, pm.calls, "Start")
+	assert.Contains(t, qmpMock.Calls(), "Connect")
+	assert.NotContains(t, qmpMock.Calls(), "SystemReset")
+
+	boot := m.GetBootOverride()
+	assert.Equal(t, "Disabled", boot.Enabled)
+	assert.Equal(t, "None", boot.Target)
+}
+
+func TestProcessMode_Reset_ForceRestart_WithoutBootOverride_UsesSystemReset(t *testing.T) {
+	qmpMock := newMockQMPClient(qmp.StatusRunning)
+	pm := newMockProcessManager(true)
+	m := NewWithProcess(qmpMock, pm)
+
 	err := m.Reset("ForceRestart")
 	require.NoError(t, err)
 	assert.Contains(t, qmpMock.Calls(), "SystemReset")
+	assert.NotContains(t, pm.calls, "Stop")
+	assert.NotContains(t, pm.calls, "Start")
 }
 
 func TestProcessMode_Reset_GracefulShutdown(t *testing.T) {
@@ -419,11 +459,22 @@ func TestProcessMode_Reset_GracefulShutdown(t *testing.T) {
 	assert.Contains(t, pm.calls, "WaitForExit")
 }
 
-func TestLegacyMode_Reset_ForceOff_StopsQMP(t *testing.T) {
+func TestLegacyMode_Reset_ForceOff_ResetsAndStopsQMP(t *testing.T) {
 	mock := newMockQMPClient(qmp.StatusRunning)
 	m := New(mock)
 
 	err := m.Reset("ForceOff")
 	require.NoError(t, err)
-	assert.Contains(t, mock.Calls(), "Stop")
+	assert.Equal(t, "SystemReset", mock.Calls()[0])
+	assert.Equal(t, "Stop", mock.Calls()[len(mock.Calls())-1])
+}
+
+func TestProcessMode_GetPowerState_Paused_IsOff(t *testing.T) {
+	qmpMock := newMockQMPClient(qmp.StatusPaused)
+	pm := newMockProcessManager(true)
+	m := NewWithProcess(qmpMock, pm)
+
+	state, err := m.GetPowerState()
+	require.NoError(t, err)
+	assert.Equal(t, PowerOff, state)
 }

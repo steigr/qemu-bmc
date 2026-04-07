@@ -15,6 +15,7 @@ type Client interface {
 	QueryStatus() (Status, error)
 	SystemPowerdown() error
 	SystemReset() error
+	SetBootOrder(order string) error
 	Stop() error
 	Cont() error
 	Quit() error
@@ -68,3 +69,12 @@ type blockdevChangeMediumArgs struct {
 type blockdevRemoveMediumArgs struct {
 	Device string `json:"device"`
 }
+
+type humanMonitorCommandArgs struct {
+	CommandLine string `json:"command-line"`
+}
+
+type setBootDeviceArgs struct {
+	BootDevice string `json:"bootdevice"`
+}
+

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 )
 
@@ -212,6 +213,71 @@ func (c *qmpClient) SystemPowerdown() error {
 
 func (c *qmpClient) SystemReset() error {
 	return c.execute("system_reset", nil)
+}
+
+func (c *qmpClient) SetBootOrder(order string) error {
+	if err := c.execute("set_boot_device", setBootDeviceArgs{BootDevice: order}); err == nil {
+		return nil
+	}
+
+	candidates := []string{
+		fmt.Sprintf("boot_set order=%s", order),
+		fmt.Sprintf("boot_set %s", order),
+		fmt.Sprintf("set_boot_device %s", order),
+	}
+
+	errorsSeen := make([]string, 0, len(candidates))
+	for _, cmd := range candidates {
+		out, err := c.humanMonitorCommand(cmd)
+		if err != nil {
+			errorsSeen = append(errorsSeen, fmt.Sprintf("%s: %v", cmd, err))
+			continue
+		}
+		if monitorOutputIndicatesError(out) {
+			errorsSeen = append(errorsSeen, fmt.Sprintf("%s: %s", cmd, strings.TrimSpace(out)))
+			continue
+		}
+		return nil
+	}
+
+	if len(errorsSeen) == 0 {
+		return fmt.Errorf("failed to set boot order %q", order)
+	}
+	return fmt.Errorf("failed to set boot order %q: %s", order, strings.Join(errorsSeen, "; "))
+}
+
+func (c *qmpClient) humanMonitorCommand(commandLine string) (string, error) {
+	raw, err := c.executeWithResponse("human-monitor-command", humanMonitorCommandArgs{CommandLine: commandLine})
+	if err != nil {
+		return "", err
+	}
+
+	var resp qmpResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return "", fmt.Errorf("parsing response: %w", err)
+	}
+	if resp.Error != nil {
+		return "", fmt.Errorf("QMP error: %s: %s", resp.Error.Class, resp.Error.Desc)
+	}
+
+	if out, ok := resp.Return.(string); ok {
+		return out, nil
+	}
+	return "", nil
+}
+
+func monitorOutputIndicatesError(out string) bool {
+	if out == "" {
+		return false
+	}
+	text := strings.ToLower(out)
+	indicators := []string{"unknown command", "invalid", "error", "not found", "not supported", "failed"}
+	for _, s := range indicators {
+		if strings.Contains(text, s) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *qmpClient) Stop() error {
