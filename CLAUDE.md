@@ -89,11 +89,12 @@ make container-test-all
 | `QMP_SOCK` | `/var/run/qemu/qmp.sock` | QMP socket path |
 | `IPMI_USER` | `admin` | IPMI/Redfish auth username |
 | `IPMI_PASS` | `password` | IPMI/Redfish auth password |
-| `REDFISH_PORT` | `443` | Redfish HTTPS port |
-| `IPMI_PORT` | `623` | IPMI UDP port |
+| `REDFISH_ADDR` | `127.0.0.1` | Redfish bind address |
+| `REDFISH_PORT` | `8080` | Redfish HTTP port |
+| `IPMI_PORT` | `6623` | IPMI UDP port |
 | `SERIAL_ADDR` | `localhost:9002` | SOL bridge target |
-| `TLS_CERT` | (empty, falls back to HTTP) | TLS certificate path |
-| `TLS_KEY` | (empty) | TLS key path |
+| `TLS_CERT` | (empty, optional) | TLS certificate path (TLS is enabled only when both `TLS_CERT` and `TLS_KEY` are set) |
+| `TLS_KEY` | (empty, optional) | TLS key path |
 | `VM_BOOT_MODE` | `bios` | Default boot mode |
 | `VM_IPMI_ADDR` | (empty, disabled) | VM IPMI chardev listen address (e.g., `:9002`) |
 | `POWER_ON_AT_START` | `false` | Power on VM automatically at container start |

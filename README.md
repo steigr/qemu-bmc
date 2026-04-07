@@ -1,6 +1,6 @@
 # qemu-bmc
 
-A Go single binary that controls QEMU VMs via both Redfish API (HTTPS) and IPMI over LAN (UDP).
+A Go single binary that controls QEMU VMs via both Redfish API (HTTP/HTTPS) and IPMI over LAN (UDP).
 
 ```
 ┌──────────────────────────────────────────┐
@@ -10,10 +10,10 @@ A Go single binary that controls QEMU VMs via both Redfish API (HTTPS) and IPMI 
 │  │ qemu-bmc  │   │      QEMU        │   │
 │  │ (Go)      │   │                  │   │
 │  │           │   │                  │   │
-│  │ :443/tcp  │   │                  │   │
+│  │ :8080/tcp │   │                  │   │
 │  │  Redfish  ├──►│  QMP Socket      │   │
 │  │           │   │                  │   │
-│  │ :623/udp  │   │                  │   │
+│  │ :6623/udp │   │                  │   │
 │  │  IPMI     ├──►│                  │   │
 │  │           │   │                  │   │
 │  │ :9002/tcp │   │  ipmi-bmc-extern │   │
@@ -47,7 +47,7 @@ docker compose up -d
 
 # Check status
 ipmitool -I lanplus -H localhost -U admin -P password mc info
-curl -k -u admin:password https://localhost/redfish/v1/Systems/1
+curl -u admin:password http://127.0.0.1:8080/redfish/v1/Systems/1
 ```
 
 ### Docker Build
@@ -55,7 +55,7 @@ curl -k -u admin:password https://localhost/redfish/v1/Systems/1
 ```bash
 docker build -t qemu-bmc -f docker/Dockerfile .
 docker run --rm --device /dev/kvm --cap-add NET_ADMIN \
-  -p 5900:5900 -p 623:623/udp -p 443:443 \
+  -p 5900:5900 -p 6623:6623/udp -p 8080:8080 \
   -v ./vm:/vm \
   -e VM_MEMORY=4096 -e VM_CPUS=4 \
   qemu-bmc
@@ -80,54 +80,54 @@ export IPMI_PASS=password
 
 ```bash
 # Service root
-curl -k -u admin:password https://localhost/redfish/v1/
+curl -u admin:password http://127.0.0.1:8080/redfish/v1/
 
 # Check power state
-curl -k -u admin:password https://localhost/redfish/v1/Systems/1
+curl -u admin:password http://127.0.0.1:8080/redfish/v1/Systems/1
 
 # Power on
-curl -k -u admin:password -X POST \
+curl -u admin:password -X POST \
   -H 'Content-Type: application/json' \
   -d '{"ResetType": "On"}' \
-  https://localhost/redfish/v1/Systems/1/Actions/ComputerSystem.Reset
+  http://127.0.0.1:8080/redfish/v1/Systems/1/Actions/ComputerSystem.Reset
 
 # Force power off
-curl -k -u admin:password -X POST \
+curl -u admin:password -X POST \
   -H 'Content-Type: application/json' \
   -d '{"ResetType": "ForceOff"}' \
-  https://localhost/redfish/v1/Systems/1/Actions/ComputerSystem.Reset
+  http://127.0.0.1:8080/redfish/v1/Systems/1/Actions/ComputerSystem.Reset
 
 # Set PXE boot
-curl -k -u admin:password -X PATCH \
+curl -u admin:password -X PATCH \
   -H 'Content-Type: application/json' \
   -d '{"Boot": {"BootSourceOverrideEnabled": "Once", "BootSourceOverrideTarget": "Pxe"}}' \
-  https://localhost/redfish/v1/Systems/1
+  http://127.0.0.1:8080/redfish/v1/Systems/1
 
 # Mount VirtualMedia
-curl -k -u admin:password -X POST \
+curl -u admin:password -X POST \
   -H 'Content-Type: application/json' \
   -d '{"Image": "http://example.com/boot.iso", "Inserted": true}' \
-  https://localhost/redfish/v1/Managers/1/VirtualMedia/CD1/Actions/VirtualMedia.InsertMedia
+  http://127.0.0.1:8080/redfish/v1/Managers/1/VirtualMedia/CD1/Actions/VirtualMedia.InsertMedia
 
 # Unmount VirtualMedia
-curl -k -u admin:password -X POST \
-  https://localhost/redfish/v1/Managers/1/VirtualMedia/CD1/Actions/VirtualMedia.EjectMedia
+curl -u admin:password -X POST \
+  http://127.0.0.1:8080/redfish/v1/Managers/1/VirtualMedia/CD1/Actions/VirtualMedia.EjectMedia
 ```
 
 ### IPMI
 
 ```bash
 # Check power state
-ipmitool -I lanplus -H localhost -U admin -P password chassis status
+ipmitool -I lanplus -H localhost -p 6623 -U admin -P password chassis status
 
 # Power on
-ipmitool -I lanplus -H localhost -U admin -P password chassis power on
+ipmitool -I lanplus -H localhost -p 6623 -U admin -P password chassis power on
 
 # Power off
-ipmitool -I lanplus -H localhost -U admin -P password chassis power off
+ipmitool -I lanplus -H localhost -p 6623 -U admin -P password chassis power off
 
 # Set PXE boot
-ipmitool -I lanplus -H localhost -U admin -P password chassis bootdev pxe
+ipmitool -I lanplus -H localhost -p 6623 -U admin -P password chassis bootdev pxe
 ```
 
 ### noVNC
@@ -137,7 +137,7 @@ A browser-based VNC console is available on the same HTTP port as the Redfish AP
 Open a browser and navigate to:
 
 ```
-https://localhost/novnc/
+http://127.0.0.1:8080/novnc/
 ```
 
 The browser will prompt for Basic Auth (same credentials as Redfish). After authentication, the noVNC UI loads and connects to QEMU's VNC server automatically.
@@ -195,6 +195,7 @@ ipmitool user enable 3
 | GET | `/redfish/v1/Managers/1/VirtualMedia/CD1` | VirtualMedia resource |
 | POST | `.../VirtualMedia.InsertMedia` | Insert media |
 | POST | `.../VirtualMedia.EjectMedia` | Eject media |
+| GET/HEAD | `/redfish/v1/Managers/1/VirtualMedia/CD1/Proxy?image=<url>` | VirtualMedia proxy with range support |
 | GET | `/redfish/v1/Chassis` | Chassis collection |
 | GET | `/redfish/v1/Chassis/1` | Chassis resource |
 | GET | `/novnc/` | Redirect to noVNC UI |
@@ -220,11 +221,12 @@ ipmitool user enable 3
 | `QMP_SOCK` | `/var/run/qemu/qmp.sock` | QMP socket path |
 | `IPMI_USER` | `admin` | Authentication username |
 | `IPMI_PASS` | `password` | Authentication password |
-| `REDFISH_PORT` | `443` | Redfish HTTPS port |
-| `IPMI_PORT` | `623` | IPMI UDP port |
+| `REDFISH_ADDR` | `127.0.0.1` | Redfish bind address |
+| `REDFISH_PORT` | `8080` | Redfish HTTP port |
+| `IPMI_PORT` | `6623` | IPMI UDP port |
 | `SERIAL_ADDR` | `localhost:9002` | SOL bridge target |
-| `TLS_CERT` | (auto-generated) | TLS certificate path; if unset, a self-signed ECDSA cert is generated automatically |
-| `TLS_KEY` | (auto-generated) | TLS key path; if unset, generated together with `TLS_CERT` |
+| `TLS_CERT` | (empty) | TLS certificate path (TLS is enabled only when both `TLS_CERT` and `TLS_KEY` are set) |
+| `TLS_KEY` | (empty) | TLS private key path |
 | `VM_BOOT_MODE` | `bios` | Default boot mode (`bios` or `uefi`) |
 | `VM_IPMI_ADDR` | (empty, disabled) | VM IPMI chardev listen address (e.g., `:9002`) |
 | `VNC_ADDR` | `localhost:5900` | QEMU VNC TCP address for noVNC proxy |
@@ -296,7 +298,7 @@ TBD
 
 # qemu-bmc (日本語)
 
-QEMU VM を Redfish API (HTTPS) と IPMI over LAN (UDP) の両方で制御する Go シングルバイナリ。
+QEMU VM を Redfish API (HTTP/HTTPS) と IPMI over LAN (UDP) の両方で制御する Go シングルバイナリ。
 
 ```
 ┌──────────────────────────────────────────┐
@@ -306,10 +308,10 @@ QEMU VM を Redfish API (HTTPS) と IPMI over LAN (UDP) の両方で制御する
 │  │ qemu-bmc  │   │      QEMU        │   │
 │  │ (Go)      │   │                  │   │
 │  │           │   │                  │   │
-│  │ :443/tcp  │   │                  │   │
+│  │ :8080/tcp │   │                  │   │
 │  │  Redfish  ├──►│  QMP Socket      │   │
 │  │           │   │                  │   │
-│  │ :623/udp  │   │                  │   │
+│  │ :6623/udp │   │                  │   │
 │  │  IPMI     ├──►│                  │   │
 │  │           │   │                  │   │
 │  │ :9002/tcp │   │  ipmi-bmc-extern │   │
@@ -343,7 +345,7 @@ docker compose up -d
 
 # 状態確認
 ipmitool -I lanplus -H localhost -U admin -P password mc info
-curl -k -u admin:password https://localhost/redfish/v1/Systems/1
+curl -u admin:password http://127.0.0.1:8080/redfish/v1/Systems/1
 ```
 
 ### Docker ビルド
@@ -351,7 +353,7 @@ curl -k -u admin:password https://localhost/redfish/v1/Systems/1
 ```bash
 docker build -t qemu-bmc -f docker/Dockerfile .
 docker run --rm --device /dev/kvm --cap-add NET_ADMIN \
-  -p 5900:5900 -p 623:623/udp -p 443:443 \
+  -p 5900:5900 -p 6623:6623/udp -p 8080:8080 \
   -v ./vm:/vm \
   -e VM_MEMORY=4096 -e VM_CPUS=4 \
   qemu-bmc
@@ -376,54 +378,54 @@ export IPMI_PASS=password
 
 ```bash
 # サービスルート
-curl -k -u admin:password https://localhost/redfish/v1/
+curl -u admin:password http://127.0.0.1:8080/redfish/v1/
 
 # 電源状態の確認
-curl -k -u admin:password https://localhost/redfish/v1/Systems/1
+curl -u admin:password http://127.0.0.1:8080/redfish/v1/Systems/1
 
 # 電源オン
-curl -k -u admin:password -X POST \
+curl -u admin:password -X POST \
   -H 'Content-Type: application/json' \
   -d '{"ResetType": "On"}' \
-  https://localhost/redfish/v1/Systems/1/Actions/ComputerSystem.Reset
+  http://127.0.0.1:8080/redfish/v1/Systems/1/Actions/ComputerSystem.Reset
 
 # 電源オフ（強制）
-curl -k -u admin:password -X POST \
+curl -u admin:password -X POST \
   -H 'Content-Type: application/json' \
   -d '{"ResetType": "ForceOff"}' \
-  https://localhost/redfish/v1/Systems/1/Actions/ComputerSystem.Reset
+  http://127.0.0.1:8080/redfish/v1/Systems/1/Actions/ComputerSystem.Reset
 
 # PXE ブート設定
-curl -k -u admin:password -X PATCH \
+curl -u admin:password -X PATCH \
   -H 'Content-Type: application/json' \
   -d '{"Boot": {"BootSourceOverrideEnabled": "Once", "BootSourceOverrideTarget": "Pxe"}}' \
-  https://localhost/redfish/v1/Systems/1
+  http://127.0.0.1:8080/redfish/v1/Systems/1
 
 # VirtualMedia マウント
-curl -k -u admin:password -X POST \
+curl -u admin:password -X POST \
   -H 'Content-Type: application/json' \
   -d '{"Image": "http://example.com/boot.iso", "Inserted": true}' \
-  https://localhost/redfish/v1/Managers/1/VirtualMedia/CD1/Actions/VirtualMedia.InsertMedia
+  http://127.0.0.1:8080/redfish/v1/Managers/1/VirtualMedia/CD1/Actions/VirtualMedia.InsertMedia
 
 # VirtualMedia アンマウント
-curl -k -u admin:password -X POST \
-  https://localhost/redfish/v1/Managers/1/VirtualMedia/CD1/Actions/VirtualMedia.EjectMedia
+curl -u admin:password -X POST \
+  http://127.0.0.1:8080/redfish/v1/Managers/1/VirtualMedia/CD1/Actions/VirtualMedia.EjectMedia
 ```
 
 ### IPMI
 
 ```bash
 # 電源状態の確認
-ipmitool -I lanplus -H localhost -U admin -P password chassis status
+ipmitool -I lanplus -H localhost -p 6623 -U admin -P password chassis status
 
 # 電源オン
-ipmitool -I lanplus -H localhost -U admin -P password chassis power on
+ipmitool -I lanplus -H localhost -p 6623 -U admin -P password chassis power on
 
 # 電源オフ
-ipmitool -I lanplus -H localhost -U admin -P password chassis power off
+ipmitool -I lanplus -H localhost -p 6623 -U admin -P password chassis power off
 
 # PXE ブート設定
-ipmitool -I lanplus -H localhost -U admin -P password chassis bootdev pxe
+ipmitool -I lanplus -H localhost -p 6623 -U admin -P password chassis bootdev pxe
 ```
 
 ### noVNC
@@ -433,7 +435,7 @@ Redfish API と同じ HTTP ポートでブラウザベースの VNC コンソー
 ブラウザで以下の URL を開きます:
 
 ```
-https://localhost/novnc/
+http://127.0.0.1:8080/novnc/
 ```
 
 Basic 認証のプロンプトが表示されます（Redfish と同じ認証情報）。認証後、noVNC UI が表示され、QEMU の VNC サーバーに自動的に接続します。
@@ -491,6 +493,7 @@ ipmitool user enable 3
 | GET | `/redfish/v1/Managers/1/VirtualMedia/CD1` | VirtualMedia リソース |
 | POST | `.../VirtualMedia.InsertMedia` | メディア挿入 |
 | POST | `.../VirtualMedia.EjectMedia` | メディア取り出し |
+| GET/HEAD | `/redfish/v1/Managers/1/VirtualMedia/CD1/Proxy?image=<url>` | Range 対応 VirtualMedia プロキシ |
 | GET | `/redfish/v1/Chassis` | シャーシコレクション |
 | GET | `/redfish/v1/Chassis/1` | シャーシリソース |
 | GET | `/novnc/` | noVNC UI へリダイレクト |
@@ -516,11 +519,12 @@ ipmitool user enable 3
 | `QMP_SOCK` | `/var/run/qemu/qmp.sock` | QMP ソケットパス |
 | `IPMI_USER` | `admin` | 認証ユーザー名 |
 | `IPMI_PASS` | `password` | 認証パスワード |
-| `REDFISH_PORT` | `443` | Redfish HTTPS ポート |
-| `IPMI_PORT` | `623` | IPMI UDP ポート |
+| `REDFISH_ADDR` | `127.0.0.1` | Redfish バインドアドレス |
+| `REDFISH_PORT` | `8080` | Redfish HTTP ポート |
+| `IPMI_PORT` | `6623` | IPMI UDP ポート |
 | `SERIAL_ADDR` | `localhost:9002` | SOL ブリッジ先 |
-| `TLS_CERT` | (自動生成) | TLS 証明書パス。未設定時は ECDSA 自己署名証明書を動的生成 |
-| `TLS_KEY` | (自動生成) | TLS 鍵パス。未設定時は `TLS_CERT` と同時に生成 |
+| `TLS_CERT` | (空) | TLS 証明書パス（`TLS_CERT` と `TLS_KEY` の両方を設定した場合のみ TLS を有効化） |
+| `TLS_KEY` | (空) | TLS 鍵パス |
 | `VM_BOOT_MODE` | `bios` | デフォルトブートモード (`bios` または `uefi`) |
 | `VM_IPMI_ADDR` | (空、無効) | VM IPMI chardev リッスンアドレス (例: `:9002`) |
 | `VNC_ADDR` | `localhost:5900` | noVNC プロキシが接続する QEMU VNC アドレス |
