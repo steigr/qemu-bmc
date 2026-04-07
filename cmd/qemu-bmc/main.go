@@ -1,40 +1,61 @@
 package main
 
 import (
-	"crypto/tls"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
-	"github.com/tjst-t/qemu-bmc/internal/bmc"
-	"github.com/tjst-t/qemu-bmc/internal/config"
-	"github.com/tjst-t/qemu-bmc/internal/ipmi"
-	"github.com/tjst-t/qemu-bmc/internal/machine"
-	"github.com/tjst-t/qemu-bmc/internal/qemu"
-	"github.com/tjst-t/qemu-bmc/internal/qmp"
-	"github.com/tjst-t/qemu-bmc/internal/redfish"
+	"github.com/steigr/qemu-bmc/internal/bmc"
+	"github.com/steigr/qemu-bmc/internal/config"
+	"github.com/steigr/qemu-bmc/internal/ipmi"
+	"github.com/steigr/qemu-bmc/internal/machine"
+	"github.com/steigr/qemu-bmc/internal/qemu"
+	"github.com/steigr/qemu-bmc/internal/qmp"
+	"github.com/steigr/qemu-bmc/internal/redfish"
 )
 
 var version = "dev"
 
 func main() {
-	flag.Parse()
-
 	if len(os.Args) == 2 && os.Args[1] == "-v" {
 		fmt.Println(version)
 		os.Exit(0)
+	}
+
+	if len(os.Args) > 1 && os.Args[1] == "governance" {
+		if err := runGovernance(os.Args[2:]); err != nil {
+			log.Fatalf("governance failed: %v", err)
+		}
+		return
+	}
+
+	if err := runServer(os.Args[1:]); err != nil {
+		log.Fatalf("server failed: %v", err)
+	}
+}
+
+func runServer(args []string) error {
+	fs := flag.NewFlagSet("qemu-bmc", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
 	}
 
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	log.Printf("qemu-bmc %s starting...", version)
 
 	cfg := config.Load()
-	qemuArgs := flag.Args()
+	qemuArgs := fs.Args()
 
 	var qmpClient qmp.Client
 	var m *machine.Machine
@@ -48,7 +69,7 @@ func main() {
 			SerialAddr:    cfg.SerialAddr,
 		})
 		if err != nil {
-			log.Fatalf("Invalid QEMU arguments: %v", err)
+			return fmt.Errorf("invalid QEMU arguments: %w", err)
 		}
 
 		qmpClient = qmp.NewDisconnectedClient(cfg.QMPSocket)
@@ -58,7 +79,7 @@ func main() {
 		if cfg.PowerOnAtStart {
 			log.Printf("Starting QEMU: %s %v", cfg.QEMUBinary, cmdArgs)
 			if err := m.Reset("On"); err != nil {
-				log.Fatalf("Failed to start QEMU: %v", err)
+				return fmt.Errorf("failed to start QEMU: %w", err)
 			}
 		} else {
 			log.Printf("POWER_ON_AT_START=false: QEMU will not start until powered on via IPMI/Redfish")
@@ -69,7 +90,7 @@ func main() {
 		var err error
 		qmpClient, err = qmp.NewClient(cfg.QMPSocket)
 		if err != nil {
-			log.Fatalf("Failed to connect to QMP socket %s: %v", cfg.QMPSocket, err)
+			return fmt.Errorf("failed to connect to QMP socket %s: %w", cfg.QMPSocket, err)
 		}
 		log.Println("Connected to QMP socket")
 
@@ -86,7 +107,7 @@ func main() {
 		go func() {
 			log.Printf("Starting VM IPMI server on %s", cfg.VMIPMIAddr)
 			if err := vmServer.ListenAndServe(cfg.VMIPMIAddr); err != nil {
-				log.Fatalf("VM IPMI server error: %v", err)
+				log.Printf("VM IPMI server error: %v", err)
 			}
 		}()
 	}
@@ -97,13 +118,13 @@ func main() {
 		addr := fmt.Sprintf(":%s", cfg.IPMIPort)
 		log.Printf("Starting IPMI server on %s", addr)
 		if err := ipmiServer.ListenAndServe(addr); err != nil {
-			log.Fatalf("IPMI server error: %v", err)
+			log.Printf("IPMI server error: %v", err)
 		}
 	}()
 
 	// Start Redfish server
 	redfishServer := redfish.NewServer(m, cfg.IPMIUser, cfg.IPMIPass, cfg.VNCAddr)
-	addr := fmt.Sprintf(":%s", cfg.RedfishPort)
+	addr := net.JoinHostPort(cfg.RedfishAddr, cfg.RedfishPort)
 	log.Printf("Starting Redfish server on %s", addr)
 
 	httpServer := &http.Server{
@@ -112,22 +133,16 @@ func main() {
 	}
 
 	go func() {
-		if cfg.TLSCert != "" && cfg.TLSKey != "" {
+		if cfg.UseTLS {
 			if err := httpServer.ListenAndServeTLS(cfg.TLSCert, cfg.TLSKey); err != nil && err != http.ErrServerClosed {
-				log.Fatalf("Redfish server error: %v", err)
+				log.Printf("Redfish server error: %v", err)
 			}
 		} else {
-			log.Println("No TLS cert/key provided, generating self-signed certificate")
-			cert, err := generateSelfSignedCert()
-			if err != nil {
-				log.Fatalf("Failed to generate self-signed certificate: %v", err)
+			if (cfg.TLSCert != "" && cfg.TLSKey == "") || (cfg.TLSCert == "" && cfg.TLSKey != "") {
+				log.Printf("TLS disabled: both TLS_CERT and TLS_KEY are required")
 			}
-			httpServer.TLSConfig = &tls.Config{
-				MinVersion:   tls.VersionTLS12,
-				Certificates: []tls.Certificate{cert},
-			}
-			if err := httpServer.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
-				log.Fatalf("Redfish server error: %v", err)
+			if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Printf("Redfish server error: %v", err)
 			}
 		}
 	}()
@@ -147,4 +162,6 @@ func main() {
 		// Give process time to exit
 		time.Sleep(500 * time.Millisecond)
 	}
+
+	return nil
 }

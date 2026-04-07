@@ -7,11 +7,13 @@ type Config struct {
 	QMPSocket      string
 	IPMIUser       string
 	IPMIPass       string
+	RedfishAddr    string
 	RedfishPort    string
 	IPMIPort       string
 	SerialAddr     string
 	TLSCert        string
 	TLSKey         string
+	UseTLS         bool
 	VMBootMode     string
 	VMIPMIAddr     string // VM IPMI chardev listen address
 	QEMUBinary     string // QEMU binary path for process management mode
@@ -21,15 +23,20 @@ type Config struct {
 
 // Load reads configuration from environment variables with defaults
 func Load() *Config {
+	tlsCert := getEnv("TLS_CERT", "")
+	tlsKey := getEnv("TLS_KEY", "")
+
 	return &Config{
 		QMPSocket:      getEnv("QMP_SOCK", "/var/run/qemu/qmp.sock"),
 		IPMIUser:       getEnv("IPMI_USER", "admin"),
 		IPMIPass:       getEnv("IPMI_PASS", "password"),
-		RedfishPort:    getEnv("REDFISH_PORT", "443"),
-		IPMIPort:       getEnv("IPMI_PORT", "623"),
-		SerialAddr:     getEnv("SERIAL_ADDR", "localhost:9002"),
-		TLSCert:        getEnv("TLS_CERT", ""),
-		TLSKey:         getEnv("TLS_KEY", ""),
+		RedfishAddr:    getEnv("REDFISH_ADDR", "127.0.0.1"),
+		RedfishPort:    getEnv("REDFISH_PORT", "8080"),
+		IPMIPort:       getEnv("IPMI_PORT", "6623"),
+		SerialAddr:     getEnvAllowEmpty("SERIAL_ADDR", "localhost:9002"),
+		TLSCert:        tlsCert,
+		TLSKey:         tlsKey,
+		UseTLS:         tlsCert != "" && tlsKey != "",
 		VMBootMode:     getEnv("VM_BOOT_MODE", "bios"),
 		VMIPMIAddr:     getEnv("VM_IPMI_ADDR", ""),
 		QEMUBinary:     getEnv("QEMU_BINARY", "qemu-system-x86_64"),
@@ -40,6 +47,14 @@ func Load() *Config {
 
 func getEnv(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
+}
+
+// getEnvAllowEmpty returns the env var value if set (even if empty), otherwise defaultValue.
+func getEnvAllowEmpty(key, defaultValue string) string {
+	if value, ok := os.LookupEnv(key); ok {
 		return value
 	}
 	return defaultValue

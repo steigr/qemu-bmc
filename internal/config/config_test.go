@@ -9,7 +9,7 @@ import (
 
 func TestLoad_Defaults(t *testing.T) {
 	// Clear any env vars that might be set
-	for _, key := range []string{"QMP_SOCK", "IPMI_USER", "IPMI_PASS", "REDFISH_PORT", "IPMI_PORT", "SERIAL_ADDR", "TLS_CERT", "TLS_KEY", "VM_BOOT_MODE", "VM_IPMI_ADDR", "QEMU_BINARY", "POWER_ON_AT_START"} {
+	for _, key := range []string{"QMP_SOCK", "IPMI_USER", "IPMI_PASS", "REDFISH_ADDR", "REDFISH_PORT", "IPMI_PORT", "SERIAL_ADDR", "TLS_CERT", "TLS_KEY", "VM_BOOT_MODE", "VM_IPMI_ADDR", "QEMU_BINARY", "POWER_ON_AT_START"} {
 		os.Unsetenv(key)
 	}
 
@@ -17,15 +17,36 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.Equal(t, "/var/run/qemu/qmp.sock", cfg.QMPSocket)
 	assert.Equal(t, "admin", cfg.IPMIUser)
 	assert.Equal(t, "password", cfg.IPMIPass)
-	assert.Equal(t, "443", cfg.RedfishPort)
-	assert.Equal(t, "623", cfg.IPMIPort)
+	assert.Equal(t, "127.0.0.1", cfg.RedfishAddr)
+	assert.Equal(t, "8080", cfg.RedfishPort)
+	assert.Equal(t, "6623", cfg.IPMIPort)
 	assert.Equal(t, "localhost:9002", cfg.SerialAddr)
 	assert.Equal(t, "", cfg.TLSCert)
 	assert.Equal(t, "", cfg.TLSKey)
+	assert.False(t, cfg.UseTLS)
 	assert.Equal(t, "bios", cfg.VMBootMode)
 	assert.Equal(t, "", cfg.VMIPMIAddr)
 	assert.Equal(t, "qemu-system-x86_64", cfg.QEMUBinary)
 	assert.Equal(t, false, cfg.PowerOnAtStart)
+}
+
+func TestLoad_UseTLS_WhenBothCertAndKeyPresent(t *testing.T) {
+	os.Setenv("TLS_CERT", "/tmp/tls.crt")
+	os.Setenv("TLS_KEY", "/tmp/tls.key")
+	defer os.Unsetenv("TLS_CERT")
+	defer os.Unsetenv("TLS_KEY")
+
+	cfg := Load()
+	assert.True(t, cfg.UseTLS)
+}
+
+func TestLoad_UseTLS_FalseWhenOnlyOneIsSet(t *testing.T) {
+	os.Setenv("TLS_CERT", "/tmp/tls.crt")
+	os.Unsetenv("TLS_KEY")
+	defer os.Unsetenv("TLS_CERT")
+
+	cfg := Load()
+	assert.False(t, cfg.UseTLS)
 }
 
 func TestLoad_QEMUBinary_Custom(t *testing.T) {
