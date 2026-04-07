@@ -57,46 +57,39 @@ func runServer(args []string) error {
 	cfg := config.Load()
 	qemuArgs := fs.Args()
 
-	var qmpClient qmp.Client
-	var m *machine.Machine
+	if len(qemuArgs) == 0 {
+		return fmt.Errorf("usage: qemu-bmc [flags] -- <qemu-system arguments>\n\nQEMU arguments are required. Example:\n  qemu-bmc -- -m 2048 -smp 2 -nographic")
+	}
 
-	if len(qemuArgs) > 0 {
-		// Process management mode
-		log.Printf("Process management mode: managing QEMU lifecycle")
+	// Strip leading "--" separator (passed by governance or user)
+	if qemuArgs[0] == "--" {
+		qemuArgs = qemuArgs[1:]
+	}
+	if len(qemuArgs) == 0 {
+		return fmt.Errorf("no QEMU arguments provided after --")
+	}
 
-		cmdArgs, err := qemu.BuildCommandLine(qemuArgs, qemu.BuildOptions{
-			QMPSocketPath: cfg.QMPSocket,
-			SerialAddr:    cfg.SerialAddr,
-		})
-		if err != nil {
-			return fmt.Errorf("invalid QEMU arguments: %w", err)
-		}
+	cmdArgs, err := qemu.BuildCommandLine(qemuArgs, qemu.BuildOptions{
+		QMPSocketPath: cfg.QMPSocket,
+		SerialAddr:    cfg.SerialAddr,
+	})
+	if err != nil {
+		return fmt.Errorf("invalid QEMU arguments: %w", err)
+	}
 
-		qmpClient = qmp.NewDisconnectedClient(cfg.QMPSocket)
-		pm := qemu.NewProcessManager(cfg.QEMUBinary, cmdArgs, qemu.DefaultCommandFactory)
-		m = machine.NewWithProcess(qmpClient, pm)
+	qmpClient := qmp.NewDisconnectedClient(cfg.QMPSocket)
+	defer qmpClient.Close()
+	pm := qemu.NewProcessManager(cfg.QEMUBinary, cmdArgs, qemu.DefaultCommandFactory)
+	m := machine.New(qmpClient, pm)
 
-		if cfg.PowerOnAtStart {
-			log.Printf("Starting QEMU: %s %v", cfg.QEMUBinary, cmdArgs)
-			if err := m.Reset("On"); err != nil {
-				return fmt.Errorf("failed to start QEMU: %w", err)
-			}
-		} else {
-			log.Printf("POWER_ON_AT_START=false: QEMU will not start until powered on via IPMI/Redfish")
+	if cfg.PowerOnAtStart {
+		log.Printf("Starting QEMU: %s %v", cfg.QEMUBinary, cmdArgs)
+		if err := m.Reset("On"); err != nil {
+			return fmt.Errorf("failed to start QEMU: %w", err)
 		}
 	} else {
-		// Legacy mode
-		log.Printf("Legacy mode: connecting to existing QEMU instance")
-		var err error
-		qmpClient, err = qmp.NewClient(cfg.QMPSocket)
-		if err != nil {
-			return fmt.Errorf("failed to connect to QMP socket %s: %w", cfg.QMPSocket, err)
-		}
-		log.Println("Connected to QMP socket")
-
-		m = machine.New(qmpClient)
+		log.Printf("POWER_ON_AT_START=false: QEMU will not start until powered on via IPMI/Redfish")
 	}
-	defer qmpClient.Close()
 
 	// Create BMC state
 	bmcState := bmc.NewState(cfg.IPMIUser, cfg.IPMIPass)
@@ -153,15 +146,13 @@ func runServer(args []string) error {
 	sig := <-sigCh
 	log.Printf("Received signal %s, shutting down...", sig)
 
-	// Shutdown QEMU in process mode
-	if len(qemuArgs) > 0 {
-		log.Println("Stopping QEMU process...")
-		if err := m.Reset("ForceOff"); err != nil {
-			log.Printf("Error during QEMU shutdown: %v", err)
-		}
-		// Give process time to exit
-		time.Sleep(500 * time.Millisecond)
+	// Shutdown QEMU process
+	log.Println("Stopping QEMU process...")
+	if err := m.Reset("ForceOff"); err != nil {
+		log.Printf("Error during QEMU shutdown: %v", err)
 	}
+	// Give process time to exit
+	time.Sleep(500 * time.Millisecond)
 
 	return nil
 }
