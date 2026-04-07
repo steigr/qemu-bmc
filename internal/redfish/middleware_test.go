@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/tjst-t/qemu-bmc/internal/qmp"
+	"github.com/steigr/qemu-bmc/internal/qmp"
 )
 
 func TestBasicAuth(t *testing.T) {

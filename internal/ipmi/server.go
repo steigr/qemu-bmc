@@ -6,7 +6,7 @@ import (
 	"log"
 	"net"
 
-	"github.com/tjst-t/qemu-bmc/internal/bmc"
+	"github.com/steigr/qemu-bmc/internal/bmc"
 )
 
 // Server is the IPMI UDP server

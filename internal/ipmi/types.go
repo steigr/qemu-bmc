@@ -1,7 +1,7 @@
 package ipmi
 
 import (
-	"github.com/tjst-t/qemu-bmc/internal/machine"
+	"github.com/steigr/qemu-bmc/internal/machine"
 )
 
 // MachineInterface defines what the IPMI server needs from the machine layer

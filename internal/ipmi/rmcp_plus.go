@@ -10,7 +10,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/tjst-t/qemu-bmc/internal/bmc"
+	"github.com/steigr/qemu-bmc/internal/bmc"
 )
 
 // RMCPPlusSessionHeader is the RMCP+ session header

@@ -4,7 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 
-	"github.com/tjst-t/qemu-bmc/internal/bmc"
+	"github.com/steigr/qemu-bmc/internal/bmc"
 )
 
 // ipmi15Session tracks IPMI 1.5 session state

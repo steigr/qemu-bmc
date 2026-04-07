@@ -3,7 +3,7 @@ package ipmi
 import (
 	"log"
 
-	"github.com/tjst-t/qemu-bmc/internal/machine"
+	"github.com/steigr/qemu-bmc/internal/machine"
 )
 
 // handleChassisCommand handles Chassis network function commands

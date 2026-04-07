@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/tjst-t/qemu-bmc/internal/machine"
-	"github.com/tjst-t/qemu-bmc/internal/qmp"
+	"github.com/steigr/qemu-bmc/internal/machine"
+	"github.com/steigr/qemu-bmc/internal/qmp"
 )
 
 func (s *Server) handleSystemCollection(w http.ResponseWriter, r *http.Request) {

@@ -8,7 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/tjst-t/qemu-bmc/internal/qmp"
+	"github.com/steigr/qemu-bmc/internal/qmp"
 )
 
 func TestGetChassisCollection(t *testing.T) {

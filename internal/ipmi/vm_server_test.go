@@ -9,8 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/tjst-t/qemu-bmc/internal/bmc"
-	"github.com/tjst-t/qemu-bmc/internal/machine"
+	"github.com/steigr/qemu-bmc/internal/bmc"
+	"github.com/steigr/qemu-bmc/internal/machine"
 )
 
 // vmTestHelper sets up a net.Pipe-based VMServer test environment.

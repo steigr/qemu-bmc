@@ -12,9 +12,9 @@ import (
 	"log"
 	"net"
 
-	"github.com/tjst-t/qemu-bmc/internal/bmc"
-	"github.com/tjst-t/qemu-bmc/internal/ipmi"
-	"github.com/tjst-t/qemu-bmc/internal/machine"
+	"github.com/steigr/qemu-bmc/internal/bmc"
+	"github.com/steigr/qemu-bmc/internal/ipmi"
+	"github.com/steigr/qemu-bmc/internal/machine"
 )
 
 // stubMachine simulates a powered-on VM for testing purposes.

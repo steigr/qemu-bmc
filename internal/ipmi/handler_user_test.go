@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/tjst-t/qemu-bmc/internal/bmc"
+	"github.com/steigr/qemu-bmc/internal/bmc"
 )
 
 func newTestBMCState() *bmc.State {

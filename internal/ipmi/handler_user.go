@@ -3,7 +3,7 @@ package ipmi
 import (
 	"strings"
 
-	"github.com/tjst-t/qemu-bmc/internal/bmc"
+	"github.com/steigr/qemu-bmc/internal/bmc"
 )
 
 // handleGetUserAccess returns user access data for a given channel and user ID.

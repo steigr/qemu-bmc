@@ -1,7 +1,7 @@
 package ipmi
 
 import (
-	"github.com/tjst-t/qemu-bmc/internal/bmc"
+	"github.com/steigr/qemu-bmc/internal/bmc"
 )
 
 // lanConfigRevision is the parameter revision byte returned in Get LAN Config responses.

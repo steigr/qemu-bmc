@@ -7,7 +7,7 @@ import (
 	"net"
 	"sync"
 
-	"github.com/tjst-t/qemu-bmc/internal/bmc"
+	"github.com/steigr/qemu-bmc/internal/bmc"
 )
 
 // VMServer is a TCP server that speaks the OpenIPMI VM wire protocol.

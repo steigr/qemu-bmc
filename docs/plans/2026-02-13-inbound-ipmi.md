@@ -660,7 +660,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/tjst-t/qemu-bmc/internal/bmc"
+	"github.com/steigr/qemu-bmc/internal/bmc"
 )
 
 func newTestBMCState() *bmc.State {
@@ -790,7 +790,7 @@ package ipmi
 import (
 	"strings"
 
-	"github.com/tjst-t/qemu-bmc/internal/bmc"
+	"github.com/steigr/qemu-bmc/internal/bmc"
 )
 
 func handleGetUserAccess(reqData []byte, state *bmc.State) (CompletionCode, []byte) {
@@ -1058,7 +1058,7 @@ Expected: FAIL
 // internal/ipmi/handler_channel.go
 package ipmi
 
-import "github.com/tjst-t/qemu-bmc/internal/bmc"
+import "github.com/steigr/qemu-bmc/internal/bmc"
 
 func handleGetChannelAccess(reqData []byte, state *bmc.State) (CompletionCode, []byte) {
 	if len(reqData) < 2 {
@@ -1280,7 +1280,7 @@ Expected: FAIL
 // internal/ipmi/handler_lan.go
 package ipmi
 
-import "github.com/tjst-t/qemu-bmc/internal/bmc"
+import "github.com/steigr/qemu-bmc/internal/bmc"
 
 // Supported LAN configuration parameters
 var supportedLANParams = map[uint8]bool{
@@ -1872,7 +1872,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/tjst-t/qemu-bmc/internal/bmc"
+	"github.com/steigr/qemu-bmc/internal/bmc"
 )
 
 // mockVMConn simulates the QEMU side of the chardev connection
@@ -2065,7 +2065,7 @@ import (
 	"net"
 	"sync"
 
-	"github.com/tjst-t/qemu-bmc/internal/bmc"
+	"github.com/steigr/qemu-bmc/internal/bmc"
 )
 
 // VMServer handles the OpenIPMI VM wire protocol for ipmi-bmc-extern
@@ -2310,7 +2310,7 @@ package main
 
 import (
 	// ... existing imports ...
-	"github.com/tjst-t/qemu-bmc/internal/bmc"
+	"github.com/steigr/qemu-bmc/internal/bmc"
 )
 
 func main() {
