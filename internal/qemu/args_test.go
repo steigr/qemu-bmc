@@ -1,6 +1,7 @@
 package qemu
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -274,3 +275,105 @@ func TestApplyBootOverride_AddsWhenMissing(t *testing.T) {
 	assert.Contains(t, result, "-boot")
 	assert.Contains(t, result, "n")
 }
+
+// --- ApplyBootOverride bootindex rewriting (UEFI) ---
+
+func TestApplyBootOverride_Cd_PromotesCDROM_BootIndex(t *testing.T) {
+	args := []string{
+		"-device", "virtio-blk-pci,drive=disk0,id=vdisk0,bootindex=2",
+		"-device", "ide-cd,drive=ide0-cd0,bus=ahci0.0,bootindex=1",
+	}
+	result := ApplyBootOverride(args, "Cd")
+	var diskDevice, cdDevice string
+	for i, a := range result {
+		if a == "-device" && i+1 < len(result) {
+			if strings.Contains(result[i+1], "drive=disk0") {
+				diskDevice = result[i+1]
+			}
+			if strings.Contains(result[i+1], "drive=ide0-cd0") {
+				cdDevice = result[i+1]
+			}
+		}
+	}
+	assert.Contains(t, cdDevice, "bootindex=1", "CD should remain at bootindex=1")
+	assert.Contains(t, diskDevice, "bootindex=2", "Disk should stay at bootindex=2")
+}
+
+func TestApplyBootOverride_Hdd_PromotesDisk_BootIndex(t *testing.T) {
+	args := []string{
+		"-device", "virtio-blk-pci,drive=disk0,id=vdisk0,bootindex=2",
+		"-device", "ide-cd,drive=ide0-cd0,bus=ahci0.0,bootindex=1",
+	}
+	result := ApplyBootOverride(args, "Hdd")
+	// Find the two -device values
+	var diskDevice, cdDevice string
+	for i, a := range result {
+		if a == "-device" && i+1 < len(result) {
+			if strings.Contains(result[i+1], "drive=disk0") {
+				diskDevice = result[i+1]
+			}
+			if strings.Contains(result[i+1], "drive=ide0-cd0") {
+				cdDevice = result[i+1]
+			}
+		}
+	}
+	assert.Contains(t, diskDevice, "bootindex=1", "disk should be promoted to bootindex=1")
+	assert.NotContains(t, cdDevice, "bootindex=1", "cdrom should not have bootindex=1")
+}
+
+func TestApplyBootOverride_Cd_AddsBootIndexWhenMissing(t *testing.T) {
+	args := []string{
+		"-device", "ide-cd,drive=ide0-cd0,bus=ahci0.0",
+	}
+	result := ApplyBootOverride(args, "Cd")
+	var cdDevice string
+	for i, a := range result {
+		if a == "-device" && i+1 < len(result) {
+			if strings.Contains(result[i+1], "drive=ide0-cd0") {
+				cdDevice = result[i+1]
+			}
+		}
+	}
+	assert.Contains(t, cdDevice, "bootindex=1", "should add bootindex=1 to CD-ROM device")
+}
+
+func TestApplyBootOverride_Cd_SwapsBootIndex(t *testing.T) {
+	// Scenario: CD has bootindex=3, disk has bootindex=1
+	args := []string{
+		"-device", "virtio-blk-pci,drive=disk0,bootindex=1",
+		"-device", "ide-cd,drive=ide0-cd0,bootindex=3",
+	}
+	result := ApplyBootOverride(args, "Cd")
+	var diskDevice, cdDevice string
+	for i, a := range result {
+		if a == "-device" && i+1 < len(result) {
+			if strings.Contains(result[i+1], "drive=disk0") {
+				diskDevice = result[i+1]
+			}
+			if strings.Contains(result[i+1], "drive=ide0-cd0") {
+				cdDevice = result[i+1]
+			}
+		}
+	}
+	assert.Contains(t, cdDevice, "bootindex=1", "CD should be promoted to bootindex=1")
+	assert.NotContains(t, diskDevice, "bootindex=1", "disk should not have bootindex=1 anymore")
+}
+
+func TestApplyBootOverride_PreservesNonBootDevices(t *testing.T) {
+	args := []string{
+		"-device", "virtio-net-pci,netdev=net0",
+		"-device", "ide-cd,drive=ide0-cd0,bootindex=2",
+	}
+	result := ApplyBootOverride(args, "Cd")
+	// Network device should be unchanged
+	var netDevice string
+	for i, a := range result {
+		if a == "-device" && i+1 < len(result) {
+			if strings.Contains(result[i+1], "netdev=net0") {
+				netDevice = result[i+1]
+			}
+		}
+	}
+	assert.Equal(t, "virtio-net-pci,netdev=net0", netDevice)
+}
+

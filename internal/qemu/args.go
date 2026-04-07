@@ -123,7 +123,7 @@ func BuildCommandLine(userArgs []string, opts BuildOptions) ([]string, error) {
 	return args, nil
 }
 
-// bootTargetToQEMU maps Redfish boot targets to QEMU -boot arguments.
+// bootTargetToQEMU maps Redfish boot targets to QEMU -boot arguments (BIOS mode).
 var bootTargetToQEMU = map[string]string{
 	"Pxe":       "n",
 	"Hdd":       "c",
@@ -131,28 +131,101 @@ var bootTargetToQEMU = map[string]string{
 	"BiosSetup": "menu=on",
 }
 
+// deviceBootPriority defines which -device drive IDs map to which Redfish
+// boot target. The ApplyBootOverride function promotes the matching device
+// to bootindex=1 and demotes others.
+var deviceBootPriority = map[string]struct {
+	driveIDPrefix string // match against drive= value in -device
+}{
+	"Cd":  {driveIDPrefix: "ide0-cd"},
+	"Hdd": {driveIDPrefix: "disk"},
+}
+
 // ApplyBootOverride modifies QEMU args to apply a boot target override.
 // If target is "None" or empty, args are returned unchanged.
+//
+// Two mechanisms are applied:
+//  1. -boot flag is set (effective in BIOS/SeaBIOS mode)
+//  2. bootindex= values on -device args are rewritten (effective in UEFI mode)
 func ApplyBootOverride(args []string, target string) []string {
-	bootVal, ok := bootTargetToQEMU[target]
-	if !ok {
+	bootVal, hasBoot := bootTargetToQEMU[target]
+	prio, hasDevice := deviceBootPriority[target]
+
+	if !hasBoot && !hasDevice {
 		return args
 	}
 
 	result := make([]string, 0, len(args)+2)
-	replaced := false
+	bootReplaced := false
+
 	for i := 0; i < len(args); i++ {
-		if args[i] == "-boot" && i+1 < len(args) {
+		// Rewrite -boot flag (BIOS path)
+		if hasBoot && args[i] == "-boot" && i+1 < len(args) {
 			result = append(result, "-boot", bootVal)
 			i++ // skip old value
-			replaced = true
-		} else {
-			result = append(result, args[i])
+			bootReplaced = true
+			continue
 		}
+
+		// Rewrite bootindex on -device args (UEFI path)
+		if hasDevice && args[i] == "-device" && i+1 < len(args) {
+			devVal := args[i+1]
+			result = append(result, "-device", rewriteBootIndex(devVal, prio.driveIDPrefix))
+			i++ // skip value
+			continue
+		}
+
+		result = append(result, args[i])
 	}
 
-	if !replaced {
+	if hasBoot && !bootReplaced {
 		result = append(result, "-boot", bootVal)
 	}
 	return result
 }
+
+// rewriteBootIndex rewrites bootindex= in a -device value string.
+// If the device's drive= matches the priority prefix, set bootindex=1.
+// Otherwise, if the device already has a bootindex, demote it (increment by 1).
+func rewriteBootIndex(deviceVal, priorityDrivePrefix string) string {
+	parts := strings.Split(deviceVal, ",")
+	driveID := ""
+	bootIdxPos := -1
+
+	for i, part := range parts {
+		if strings.HasPrefix(part, "drive=") {
+			driveID = strings.TrimPrefix(part, "drive=")
+		}
+		if strings.HasPrefix(part, "bootindex=") {
+			bootIdxPos = i
+		}
+	}
+
+	if driveID == "" {
+		return deviceVal // no drive=, not a bootable device we care about
+	}
+
+	isPriority := strings.HasPrefix(driveID, priorityDrivePrefix)
+
+	if isPriority {
+		if bootIdxPos >= 0 {
+			parts[bootIdxPos] = "bootindex=1"
+		} else {
+			parts = append(parts, "bootindex=1")
+		}
+	} else if bootIdxPos >= 0 {
+		// Demote non-priority devices: move bootindex up to avoid conflict
+		// Parse existing index, add 1 (minimum 2)
+		existing := strings.TrimPrefix(parts[bootIdxPos], "bootindex=")
+		idx := 2
+		if n, err := fmt.Sscanf(existing, "%d", &idx); n == 1 && err == nil {
+			if idx < 2 {
+				idx = 2
+			}
+		}
+		parts[bootIdxPos] = fmt.Sprintf("bootindex=%d", idx)
+	}
+
+	return strings.Join(parts, ",")
+}
+

@@ -206,7 +206,9 @@ func (m *Machine) applyRuntimeBootOverride() error {
 	}
 
 	if err := m.qmpClient.SetBootOrder(order); err != nil {
-		return fmt.Errorf("setting runtime boot order: %w", err)
+		// Runtime boot order change is best-effort. UEFI/OVMF ignores
+		// QMP boot_set; the cold restart path handles UEFI via bootindex.
+		log.Printf("SetBootOrder(%q) failed (non-fatal, UEFI may not support this): %v", order, err)
 	}
 
 	if m.bootOverride.Enabled == "Once" {
