@@ -56,6 +56,10 @@ func (p *processManager) Start(bootTarget string) error {
 	}
 
 	args := ApplyBootOverride(p.baseArgs, bootTarget)
+	// Start QEMU paused (-S) so the machine layer can insert media and
+	// apply configuration via QMP before the firmware enumerates boot
+	// devices. The machine layer calls qmpClient.Cont() to resume.
+	args = append(args, "-S")
 	p.cmd = p.cmdFactory(p.binary, args)
 	p.cmd.Stdout = os.Stdout
 	p.cmd.Stderr = os.Stderr

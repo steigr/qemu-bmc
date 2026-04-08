@@ -29,12 +29,6 @@ func main() {
 		os.Exit(0)
 	}
 
-	if len(os.Args) > 1 && os.Args[1] == "governance" {
-		if err := runGovernance(os.Args[2:]); err != nil {
-			log.Fatalf("governance failed: %v", err)
-		}
-		return
-	}
 
 	if err := runServer(os.Args[1:]); err != nil {
 		log.Fatalf("server failed: %v", err)
@@ -61,7 +55,7 @@ func runServer(args []string) error {
 		return fmt.Errorf("usage: qemu-bmc [flags] -- <qemu-system arguments>\n\nQEMU arguments are required. Example:\n  qemu-bmc -- -m 2048 -smp 2 -nographic")
 	}
 
-	// Strip leading "--" separator (passed by governance or user)
+	// Strip leading "--" separator if present
 	if qemuArgs[0] == "--" {
 		qemuArgs = qemuArgs[1:]
 	}
@@ -148,11 +142,10 @@ func runServer(args []string) error {
 
 	// Shutdown QEMU process
 	log.Println("Stopping QEMU process...")
-	if err := m.Reset("ForceOff"); err != nil {
-		log.Printf("Error during QEMU shutdown: %v", err)
+	if err := pm.Stop(10 * time.Second); err != nil {
+		log.Printf("Error stopping QEMU: %v, force killing", err)
+		_ = pm.Kill()
 	}
-	// Give process time to exit
-	time.Sleep(500 * time.Millisecond)
 
 	return nil
 }

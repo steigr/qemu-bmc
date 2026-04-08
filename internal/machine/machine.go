@@ -44,6 +44,7 @@ type Machine struct {
 	qmpClient      qmp.Client
 	processManager ProcessManager
 	bootOverride   BootOverride
+	insertedMedia  string // URL of currently inserted media (survives cold restart)
 	mu             sync.RWMutex
 }
 
@@ -109,6 +110,7 @@ func (m *Machine) Reset(resetType string) error {
 		}
 		m.mu.RLock()
 		target := m.bootOverride.Target
+		media := m.insertedMedia
 		m.mu.RUnlock()
 
 		if err := m.processManager.Start(target); err != nil {
@@ -117,6 +119,18 @@ func (m *Machine) Reset(resetType string) error {
 
 		if err := m.waitForQMP(30 * time.Second); err != nil {
 			return fmt.Errorf("waiting for QMP: %w", err)
+		}
+
+		// Re-insert media that was present before power-off.
+		if media != "" {
+			if err := m.qmpClient.BlockdevChangeMedium("ide0-cd0", media); err != nil {
+				log.Printf("re-insert media after power-on failed (non-fatal): %v", err)
+			}
+		}
+
+		// QEMU starts paused (-S); resume after setup is complete.
+		if err := m.qmpClient.Cont(); err != nil {
+			return fmt.Errorf("resuming QEMU after power-on: %w", err)
 		}
 
 		m.ConsumeBootOnce()
@@ -172,6 +186,7 @@ func (m *Machine) coldRestartProcessWithBootOverride() error {
 	m.mu.RLock()
 	target := m.bootOverride.Target
 	enabled := m.bootOverride.Enabled
+	media := m.insertedMedia
 	m.mu.RUnlock()
 
 	if err := m.processManager.Stop(30 * time.Second); err != nil {
@@ -182,6 +197,18 @@ func (m *Machine) coldRestartProcessWithBootOverride() error {
 	}
 	if err := m.waitForQMP(30 * time.Second); err != nil {
 		return fmt.Errorf("waiting for QMP after boot override restart: %w", err)
+	}
+
+	// Re-insert media that was present before the cold restart.
+	if media != "" {
+		if err := m.qmpClient.BlockdevChangeMedium("ide0-cd0", media); err != nil {
+			log.Printf("re-insert media after cold restart failed (non-fatal): %v", err)
+		}
+	}
+
+	// QEMU starts paused (-S); resume after setup is complete.
+	if err := m.qmpClient.Cont(); err != nil {
+		return fmt.Errorf("resuming QEMU after boot override restart: %w", err)
 	}
 
 	if enabled == "Once" {
@@ -293,10 +320,22 @@ func (m *Machine) ConsumeBootOnce() {
 
 // InsertMedia inserts virtual media into the VM
 func (m *Machine) InsertMedia(image string) error {
-	return m.qmpClient.BlockdevChangeMedium("ide0-cd0", image)
+	if err := m.qmpClient.BlockdevChangeMedium("ide0-cd0", image); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.insertedMedia = image
+	m.mu.Unlock()
+	return nil
 }
 
 // EjectMedia ejects virtual media from the VM
 func (m *Machine) EjectMedia() error {
-	return m.qmpClient.BlockdevRemoveMedium("ide0-cd0")
+	if err := m.qmpClient.BlockdevRemoveMedium("ide0-cd0"); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.insertedMedia = ""
+	m.mu.Unlock()
+	return nil
 }

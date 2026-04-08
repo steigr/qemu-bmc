@@ -185,14 +185,7 @@ func run() error {
 }
 
 func makeBMCCmd(cfg *config, qemuArgs []string) (*exec.Cmd, string, error) {
-	bmcArgs := []string{"governance", "--reset-signal", "USR2"}
-	if cfg.VMBootMode == "uefi" {
-		liveVars := strings.TrimSuffix(cfg.QEMUDisk, filepath.Ext(cfg.QEMUDisk)) + "-uefi-vars.fd"
-		if cfg.OVMFVars != "" {
-			bmcArgs = append(bmcArgs, "--vars-file", liveVars, "--vars-template", cfg.OVMFVars)
-		}
-	}
-	bmcArgs = append(bmcArgs, "--")
+	bmcArgs := []string{"--"}
 	bmcArgs = append(bmcArgs, qemuArgs...)
 
 	if explicit := os.Getenv("QEMU_BMC_BIN"); explicit != "" {

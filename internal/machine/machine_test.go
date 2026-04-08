@@ -357,6 +357,10 @@ func TestReset_GracefulRestart(t *testing.T) {
 	pm := newMockProcessManager(true)
 	m := New(mock, pm)
 
+	// Simulate guest shutting down after powerdown (process exits)
+	pm.running = false
+	close(pm.exitCh)
+
 	err := m.Reset("GracefulRestart")
 	require.NoError(t, err)
 	assert.Contains(t, mock.Calls(), "SystemPowerdown")
@@ -424,3 +428,84 @@ func TestEjectMedia(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, mock.Calls(), "BlockdevRemoveMedium")
 }
+
+func TestColdRestart_ReInsertsMedia(t *testing.T) {
+	mock := newMockQMPClient(qmp.StatusRunning)
+	pm := newMockProcessManager(true)
+	m := New(mock, pm)
+
+	// Insert media
+	err := m.InsertMedia("http://example.com/boot.iso")
+	require.NoError(t, err)
+
+	// Set boot override to trigger cold restart
+	err = m.SetBootOverride(BootOverride{Enabled: "Once", Target: "Cd", Mode: "UEFI"})
+	require.NoError(t, err)
+
+	// Clear call log to track what happens during restart
+	mock.calls = nil
+
+	// ForceRestart should cold-restart and re-insert media
+	err = m.Reset("ForceRestart")
+	require.NoError(t, err)
+
+	// Verify media was re-inserted after restart
+	blockdevCalls := 0
+	for _, c := range mock.Calls() {
+		if c == "BlockdevChangeMedium" {
+			blockdevCalls++
+		}
+	}
+	assert.Equal(t, 1, blockdevCalls, "media should be re-inserted after cold restart")
+
+	// Verify boot override was consumed (Once)
+	boot := m.GetBootOverride()
+	assert.Equal(t, "Disabled", boot.Enabled)
+}
+
+func TestColdRestart_NoMedia_SkipsReInsert(t *testing.T) {
+	mock := newMockQMPClient(qmp.StatusRunning)
+	pm := newMockProcessManager(true)
+	m := New(mock, pm)
+
+	// Set boot override without inserting media
+	err := m.SetBootOverride(BootOverride{Enabled: "Once", Target: "Cd", Mode: "UEFI"})
+	require.NoError(t, err)
+
+	mock.calls = nil
+
+	err = m.Reset("ForceRestart")
+	require.NoError(t, err)
+
+	// Verify no BlockdevChangeMedium call
+	for _, c := range mock.Calls() {
+		assert.NotEqual(t, "BlockdevChangeMedium", c, "should not re-insert when no media was inserted")
+	}
+}
+
+func TestEjectMedia_ClearsTrackedMedia(t *testing.T) {
+	mock := newMockQMPClient(qmp.StatusRunning)
+	pm := newMockProcessManager(true)
+	m := New(mock, pm)
+
+	// Insert then eject media
+	err := m.InsertMedia("http://example.com/boot.iso")
+	require.NoError(t, err)
+	err = m.EjectMedia()
+	require.NoError(t, err)
+
+	// Set boot override to trigger cold restart
+	err = m.SetBootOverride(BootOverride{Enabled: "Once", Target: "Cd", Mode: "UEFI"})
+	require.NoError(t, err)
+
+	mock.calls = nil
+
+	err = m.Reset("ForceRestart")
+	require.NoError(t, err)
+
+	// Verify no BlockdevChangeMedium call (media was ejected)
+	for _, c := range mock.Calls() {
+		assert.NotEqual(t, "BlockdevChangeMedium", c, "should not re-insert ejected media")
+	}
+}
+

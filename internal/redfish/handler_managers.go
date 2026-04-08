@@ -4,9 +4,6 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"os"
-	"strconv"
-	"syscall"
 )
 
 func (s *Server) handleManagerCollection(w http.ResponseWriter, r *http.Request) {
@@ -95,15 +92,21 @@ func (s *Server) handleInsertMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Always cache media locally for QMP. QEMU's curl backend is read-only,
+	// which fails for USB/disk drives. A local file works universally.
+	if err := source.ensureCached(s.mediaProxyClient); err != nil {
+		writeError(w, http.StatusBadGateway, "InternalError", "failed to cache virtual media")
+		return
+	}
+	qmpPath := source.cachePath
+
 	// Track media state in BMC. QMP insertion is best-effort.
-	if err := s.machine.InsertMedia(proxyURL); err != nil {
-		log.Printf("VirtualMedia: QMP insert failed (non-fatal, proxyURL=%s): %v", proxyURL, err)
+	if err := s.machine.InsertMedia(qmpPath); err != nil {
+		log.Printf("VirtualMedia: QMP insert failed (non-fatal, qmpPath=%s): %v", qmpPath, err)
 	}
 	if restartOnInsert {
-		if !signalGovernanceReset() {
-			if err := s.machine.Reset("ForceRestart"); err != nil {
-				log.Printf("VirtualMedia: ForceRestart after first insert with one-time CD boot failed: %v", err)
-			}
+		if err := s.machine.Reset("ForceRestart"); err != nil {
+			log.Printf("VirtualMedia: ForceRestart after first insert with one-time CD boot failed: %v", err)
 		}
 	}
 
@@ -114,27 +117,6 @@ func (s *Server) handleInsertMedia(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
-func signalGovernanceReset() bool {
-	pidStr := os.Getenv("QEMU_BMC_GOVERNANCE_PID")
-	if pidStr == "" {
-		return false
-	}
-
-	pid, err := strconv.Atoi(pidStr)
-	if err != nil || pid <= 1 {
-		return false
-	}
-
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	if err := proc.Signal(syscall.SIGUSR2); err != nil {
-		return false
-	}
-	log.Printf("VirtualMedia: requested governance reset via SIGUSR2 (pid=%d)", pid)
-	return true
-}
 
 func (s *Server) handleEjectMedia(w http.ResponseWriter, r *http.Request) {
 	if err := s.machine.EjectMedia(); err != nil {

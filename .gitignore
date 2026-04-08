@@ -7,3 +7,6 @@ coverage.out
 # noVNC static files (downloaded at build time via `make download-novnc`)
 /internal/novnc/static/*
 !/internal/novnc/static/.gitkeep
+*.qcow2
+*-uefi-vars.fd
+.idea

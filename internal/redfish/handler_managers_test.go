@@ -105,9 +105,9 @@ func TestInsertVirtualMedia(t *testing.T) {
 	srv.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Contains(t, mock.LastInsertedMedia(), "/redfish/v1/Managers/1/VirtualMedia/CD1/Proxy?image=")
-	assert.Contains(t, mock.LastInsertedMedia(), url.QueryEscape(backend.URL+"/boot.iso"))
-	assert.Contains(t, mock.LastInsertedMedia(), "http://127.0.0.1:8080/")
+	// Media is cached locally; QMP receives a local file path, not a proxy URL.
+	assert.Contains(t, mock.LastInsertedMedia(), "qemu-bmc-vmedia-")
+	assert.Contains(t, mock.LastInsertedMedia(), ".iso")
 }
 
 func TestInsertVirtualMedia_FirstInsertWithBootOnceCd_TriggersRestart(t *testing.T) {
