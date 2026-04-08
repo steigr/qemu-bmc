@@ -1,5 +1,9 @@
 // Package bmctest provides reusable test helpers for e2e testing of qemu-bmc.
 //
+// Instead of building and running qemu-bmc as a subprocess, this package
+// wires up the internal components (QMP client, process manager, machine,
+// Redfish server, IPMI server) directly in the test process.
+//
 // Other projects can import this package to spin up a qemu-bmc instance
 // managing a real QEMU VM and interact with it via Redfish and IPMI APIs.
 //
@@ -18,13 +22,11 @@
 //
 // # Requirements
 //
-//   - A pre-built qemu-bmc binary, or Go toolchain available to build it.
 //   - QEMU system emulator installed (e.g. qemu-system-x86_64).
 //   - For UEFI tests: OVMF/AAVMF firmware files.
 package bmctest
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -36,9 +38,15 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
+
+	"github.com/steigr/qemu-bmc/internal/bmc"
+	"github.com/steigr/qemu-bmc/internal/ipmi"
+	"github.com/steigr/qemu-bmc/internal/machine"
+	"github.com/steigr/qemu-bmc/internal/qemu"
+	"github.com/steigr/qemu-bmc/internal/qmp"
+	"github.com/steigr/qemu-bmc/internal/redfish"
 )
 
 // Config describes the qemu-bmc + QEMU configuration for a test.
@@ -49,16 +57,6 @@ type Config struct {
 	// QEMUArgs are the QEMU command-line arguments passed after "--".
 	QEMUArgs []string
 
-	// BMCBinary is the path to a pre-built qemu-bmc binary. If empty,
-	// the helper will build one from source (requires Go toolchain and
-	// the qemu-bmc source tree).
-	BMCBinary string
-
-	// ProjectRoot is the path to the qemu-bmc source tree. If empty,
-	// the helper walks up from the current directory looking for go.mod.
-	// Only needed when BMCBinary is empty (auto-build).
-	ProjectRoot string
-
 	// IPMIUser and IPMIPass are the credentials for Redfish Basic Auth
 	// and IPMI authentication. Default to "admin" / "password".
 	IPMIUser string
@@ -67,10 +65,6 @@ type Config struct {
 	// PowerOnAtStart controls whether the VM starts automatically.
 	// Defaults to true.
 	PowerOnAtStart *bool
-
-	// Env sets additional environment variables for the qemu-bmc process.
-	// Keys from this map override any defaults set by the helper.
-	Env map[string]string
 
 	// SetupFirmware is an optional callback that can modify QEMUArgs
 	// (e.g. to copy UEFI NVRAM templates into a temp directory).
@@ -96,15 +90,26 @@ type BMC struct {
 	User string
 	Pass string
 
-	cmd       *exec.Cmd
-	outputBuf *syncBuffer
-	done      chan struct{}
-	tmpDir    string
+	// Machine provides direct access to the machine interface for
+	// advanced test scenarios that go beyond the Redfish API.
+	Machine redfish.MachineInterface
+
+	qmpClient  qmp.Client
+	pm         qemu.ProcessManager
+	httpServer *http.Server
+	ipmiServer *ipmi.Server
+	outputBuf  *syncBuffer
+	tmpDir     string
+	cleanupMu  sync.Mutex
+	cleanedUp  bool
 }
 
 // New creates and starts a new qemu-bmc instance for testing.
-// Call Cleanup() (or use defer bmc.Cleanup()) to stop the process
-// and clean up temporary files.
+// All components (QMP client, QEMU process manager, Redfish server,
+// IPMI server) run in-process — no subprocess compilation needed.
+//
+// Call Cleanup() (or use defer bmc.Cleanup()) to stop the QEMU process
+// and shut down servers.
 func New(t *testing.T, cfg Config) *BMC {
 	t.Helper()
 
@@ -126,96 +131,125 @@ func New(t *testing.T, cfg Config) *BMC {
 		powerOn = *cfg.PowerOnAtStart
 	}
 
-	// Resolve or build the BMC binary
-	bmcBin := cfg.BMCBinary
-	if bmcBin == "" {
-		root := cfg.ProjectRoot
-		if root == "" {
-			root = findProjectRoot(t)
-		}
-		bmcBin = buildBMC(t, root)
-	}
-
 	tmpDir := t.TempDir()
 	qemuArgs := cfg.QEMUArgs
 	if cfg.SetupFirmware != nil {
 		qemuArgs = cfg.SetupFirmware(t, tmpDir, qemuArgs)
 	}
 
-	redfishPort := freePort(t)
-	ipmiPort := freePort(t)
+	// QMP socket in temp dir
 	qmpSock := filepath.Join(tmpDir, "qmp.sock")
 
-	// Build environment
-	env := map[string]string{
-		"QMP_SOCK":        qmpSock,
-		"QEMU_BINARY":    cfg.QEMUBin,
-		"POWER_ON_AT_START": fmt.Sprintf("%v", powerOn),
-		"SERIAL_ADDR":    "",
-		"IPMI_USER":      cfg.IPMIUser,
-		"IPMI_PASS":      cfg.IPMIPass,
-		"REDFISH_ADDR":   "127.0.0.1",
-		"REDFISH_PORT":   redfishPort,
-		"IPMI_PORT":      ipmiPort,
-		"VNC_ADDR":       "",
-		"VM_IPMI_ADDR":   "",
-	}
-	for k, v := range cfg.Env {
-		env[k] = v
+	// Build QEMU command line (validates args, applies defaults, injects QMP)
+	cmdArgs, err := qemu.BuildCommandLine(qemuArgs, qemu.BuildOptions{
+		QMPSocketPath: qmpSock,
+		SerialAddr:    "", // nographic handles serial
+	})
+	if err != nil {
+		t.Fatalf("building QEMU command line: %v", err)
 	}
 
-	// Convert to os.Environ format
-	envSlice := os.Environ()
-	for k, v := range env {
-		envSlice = append(envSlice, k+"="+v)
-	}
-
-	// Build command: qemu-bmc -- <qemu args>
-	fullArgs := append([]string{"--"}, qemuArgs...)
-	cmd := exec.Command(bmcBin, fullArgs...)
-	cmd.Env = envSlice
-	cmd.Dir = tmpDir
-
+	// Capture QEMU stdout/stderr for output inspection
 	outputBuf := &syncBuffer{}
-	cmd.Stdout = io.MultiWriter(outputBuf, &testWriter{t: t, prefix: "[stdout] "})
-	cmd.Stderr = io.MultiWriter(outputBuf, &testWriter{t: t, prefix: "[stderr] "})
 
-	t.Logf("Starting qemu-bmc on redfish port %s, ipmi port %s", redfishPort, ipmiPort)
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("starting qemu-bmc: %v", err)
+	// Create a command factory that captures output
+	cmdFactory := func(binary string, args []string) *exec.Cmd {
+		cmd := exec.Command(binary, args...)
+		cmd.Stdout = outputBuf
+		cmd.Stderr = outputBuf
+		return cmd
 	}
 
-	done := make(chan struct{})
+	// Create core components
+	qmpClient := qmp.NewDisconnectedClient(qmpSock)
+	pm := qemu.NewProcessManager(cfg.QEMUBin, cmdArgs, cmdFactory)
+	m := machine.New(qmpClient, pm)
+
+	// Create BMC state
+	bmcState := bmc.NewState(cfg.IPMIUser, cfg.IPMIPass)
+
+	// Start IPMI server on a free port
+	ipmiPort := freePort(t)
+	ipmiServer := ipmi.NewServer(m, bmcState, cfg.IPMIUser, cfg.IPMIPass)
 	go func() {
-		_ = cmd.Wait()
-		close(done)
+		addr := fmt.Sprintf(":%s", ipmiPort)
+		if err := ipmiServer.ListenAndServe(addr); err != nil {
+			// Ignore errors from normal shutdown
+			if !strings.Contains(err.Error(), "use of closed") {
+				t.Logf("IPMI server error: %v", err)
+			}
+		}
 	}()
 
-	return &BMC{
+	// Start Redfish server on a free port
+	redfishPort := freePort(t)
+	redfishServer := redfish.NewServer(m, cfg.IPMIUser, cfg.IPMIPass, "")
+	addr := net.JoinHostPort("127.0.0.1", redfishPort)
+	httpServer := &http.Server{
+		Addr:    addr,
+		Handler: redfishServer,
+	}
+	go func() {
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			t.Logf("Redfish server error: %v", err)
+		}
+	}()
+
+	// Optionally power on the VM
+	if powerOn {
+		t.Logf("Starting QEMU: %s (args count: %d)", cfg.QEMUBin, len(cmdArgs))
+		if err := m.Reset("On"); err != nil {
+			t.Fatalf("failed to start QEMU: %v", err)
+		}
+	}
+
+	b := &BMC{
 		t:           t,
 		RedfishBase: fmt.Sprintf("http://127.0.0.1:%s", redfishPort),
 		RedfishPort: redfishPort,
 		IPMIPort:    ipmiPort,
 		User:        cfg.IPMIUser,
 		Pass:        cfg.IPMIPass,
-		cmd:         cmd,
+		Machine:     m,
+		qmpClient:   qmpClient,
+		pm:          pm,
+		httpServer:  httpServer,
+		ipmiServer:  ipmiServer,
 		outputBuf:   outputBuf,
-		done:        done,
 		tmpDir:      tmpDir,
 	}
+
+	t.Logf("qemu-bmc started in-process (redfish=%s, ipmi=%s)", redfishPort, ipmiPort)
+	return b
 }
 
-// Cleanup stops the qemu-bmc process. Safe to call multiple times.
+// Cleanup stops the QEMU process, shuts down servers, and releases resources.
+// Safe to call multiple times.
 func (b *BMC) Cleanup() {
-	b.t.Helper()
-	b.t.Log("Cleaning up: sending SIGTERM to qemu-bmc")
-	_ = b.cmd.Process.Signal(syscall.SIGTERM)
-	select {
-	case <-b.done:
-	case <-time.After(15 * time.Second):
-		b.t.Log("Cleanup: SIGTERM timed out, sending SIGKILL")
-		_ = b.cmd.Process.Kill()
+	b.cleanupMu.Lock()
+	defer b.cleanupMu.Unlock()
+	if b.cleanedUp {
+		return
 	}
+	b.cleanedUp = true
+
+	b.t.Helper()
+	b.t.Log("Cleaning up qemu-bmc test instance")
+
+	// Stop QEMU process
+	if err := b.pm.Stop(10 * time.Second); err != nil {
+		b.t.Logf("Error stopping QEMU: %v, force killing", err)
+		_ = b.pm.Kill()
+	}
+
+	// Close QMP client
+	_ = b.qmpClient.Close()
+
+	// Stop IPMI server
+	_ = b.ipmiServer.Close()
+
+	// Stop HTTP server
+	_ = b.httpServer.Close()
 }
 
 // WaitReady blocks until the Redfish service root responds with 200 OK,
@@ -226,11 +260,6 @@ func (b *BMC) WaitReady(timeout time.Duration) {
 	deadline := time.Now().Add(timeout)
 	client := &http.Client{Timeout: 2 * time.Second}
 	for time.Now().Before(deadline) {
-		select {
-		case <-b.done:
-			b.t.Fatalf("qemu-bmc exited before Redfish became ready.\nOutput:\n%s", b.outputBuf.Tail(4096))
-		default:
-		}
 		req, err := http.NewRequest("GET", b.RedfishBase+"/redfish/v1", nil)
 		if err != nil {
 			time.Sleep(500 * time.Millisecond)
@@ -250,12 +279,7 @@ func (b *BMC) WaitReady(timeout time.Duration) {
 	b.t.Fatalf("Redfish did not become ready within %s", timeout)
 }
 
-// Done returns a channel that is closed when the qemu-bmc process exits.
-func (b *BMC) Done() <-chan struct{} {
-	return b.done
-}
-
-// Output returns the captured stdout+stderr output so far.
+// Output returns the captured QEMU stdout+stderr output so far.
 func (b *BMC) Output() string {
 	return b.outputBuf.String()
 }
@@ -275,8 +299,6 @@ func (b *BMC) WaitForOutput(substr string, timeout time.Duration) bool {
 
 	for {
 		select {
-		case <-b.done:
-			return false
 		case <-deadline:
 			return false
 		case <-ticker.C:
@@ -382,7 +404,6 @@ func (b *BMC) GetChassis() map[string]interface{} {
 
 // --- Low-Level Helpers ---
 
-// RedfishGet performs an authenticated GET request and returns the parsed JSON.
 func (b *BMC) redfishGet(path string) map[string]interface{} {
 	b.t.Helper()
 	req, err := http.NewRequest("GET", b.RedfishBase+path, nil)
@@ -410,8 +431,6 @@ func (b *BMC) redfishGet(path string) map[string]interface{} {
 	return result
 }
 
-// RedfishRequest performs an authenticated request with the given method, path, body,
-// and asserts the expected status code.
 func (b *BMC) redfishRequest(method, path, body string, expectedStatus int) []byte {
 	b.t.Helper()
 	var bodyReader io.Reader
@@ -464,37 +483,6 @@ func (b *BMC) RedfishRequestRaw(method, path, body string) *http.Response {
 
 // --- Utility Functions ---
 
-// FindProjectRoot walks up from the current directory looking for go.mod.
-func findProjectRoot(t *testing.T) string {
-	t.Helper()
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatal("could not find project root (go.mod)")
-		}
-		dir = parent
-	}
-}
-
-func buildBMC(t *testing.T, projectRoot string) string {
-	t.Helper()
-	bin := filepath.Join(t.TempDir(), "qemu-bmc")
-	t.Logf("Building qemu-bmc → %s", bin)
-	build := exec.Command("go", "build", "-o", bin, "./cmd/qemu-bmc")
-	build.Dir = projectRoot
-	build.Env = append(os.Environ(), "CGO_ENABLED=0")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("go build failed: %v\n%s", err, out)
-	}
-	return bin
-}
 
 // FreePort returns a free TCP port on localhost as a string.
 func freePort(t *testing.T) string {
@@ -606,17 +594,4 @@ func (b *syncBuffer) Tail(n int) string {
 	return s
 }
 
-// testWriter writes each line to t.Log with a prefix.
-type testWriter struct {
-	t      *testing.T
-	prefix string
-}
-
-func (w *testWriter) Write(p []byte) (int, error) {
-	scanner := bufio.NewScanner(bytes.NewReader(p))
-	for scanner.Scan() {
-		w.t.Log(w.prefix + scanner.Text())
-	}
-	return len(p), nil
-}
 

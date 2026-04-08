@@ -1,6 +1,6 @@
 # bmctest — Reusable e2e test helpers for qemu-bmc
 
-Package `bmctest` provides Go test helpers for end-to-end testing of virtual machines managed by [qemu-bmc](https://github.com/steigr/qemu-bmc). Other projects can import this package to spin up a qemu-bmc instance, interact with it via Redfish API, and verify VM behavior.
+Package `bmctest` provides Go test helpers for end-to-end testing of virtual machines managed by [qemu-bmc](https://github.com/steigr/qemu-bmc). It wires up the qemu-bmc internal components (QMP client, process manager, machine state, Redfish server, IPMI server) directly in the test process — no binary compilation or subprocess needed.
 
 ## Installation
 
@@ -11,8 +11,27 @@ go get github.com/steigr/qemu-bmc/pkg/bmctest
 ## Prerequisites
 
 - **QEMU**: `qemu-system-x86_64` or `qemu-system-aarch64` installed and in `$PATH`
-- **Go toolchain**: To build the qemu-bmc binary from source (or provide a pre-built binary)
 - **UEFI firmware** (optional): OVMF/AAVMF for UEFI boot tests
+
+## Architecture
+
+Unlike traditional e2e testing that builds and runs qemu-bmc as a subprocess, `bmctest` runs everything **in-process**:
+
+```
+Test Process
+├── QEMU process manager  (starts/stops qemu-system-*)
+├── QMP client             (communicates with QEMU via UNIX socket)
+├── Machine layer          (wraps QMP + process lifecycle)
+├── Redfish HTTP server    (on random port, HTTP only)
+├── IPMI UDP server        (on random port)
+└── Output capture         (QEMU stdout/stderr)
+```
+
+Benefits:
+- **No compilation step** — tests start instantly
+- **Direct access** — `bmc.Machine` exposes the machine interface for advanced scenarios
+- **Clean isolation** — each test gets its own servers on random ports
+- **Automatic cleanup** — `defer bmc.Cleanup()` stops everything
 
 ## Quick Start
 
@@ -75,18 +94,16 @@ Creates and starts a qemu-bmc instance. The `Config` struct controls:
 |---|---|---|
 | `QEMUBin` | QEMU binary name (required) | — |
 | `QEMUArgs` | QEMU command-line arguments | — |
-| `BMCBinary` | Pre-built qemu-bmc binary path | (auto-build) |
 | `IPMIUser` / `IPMIPass` | Credentials | `admin` / `password` |
 | `PowerOnAtStart` | Start VM automatically | `true` |
 | `SetupFirmware` | Callback to prepare UEFI vars | `nil` |
-| `Env` | Additional environment variables | `nil` |
 
 ### BMC Instance Methods
 
 **Lifecycle:**
-- `bmc.Cleanup()` — Stop qemu-bmc and QEMU processes
+- `bmc.Cleanup()` — Stop QEMU process and shut down servers
 - `bmc.WaitReady(timeout)` — Block until Redfish responds
-- `bmc.Done()` — Channel closed when process exits
+- `bmc.Machine` — Direct access to the machine interface for advanced scenarios
 
 **Power Management:**
 - `bmc.GetPowerState()` → `"On"` or `"Off"`
@@ -169,28 +186,20 @@ func TestUEFIBoot(t *testing.T) {
 }
 ```
 
-## Using a Pre-Built Binary
+## Direct Machine Access
 
-If you don't want the test helper to build qemu-bmc from source, provide a pre-built binary:
-
-```go
-bmc := bmctest.New(t, bmctest.Config{
-    BMCBinary: "/usr/local/bin/qemu-bmc",
-    QEMUBin:   "qemu-system-x86_64",
-    QEMUArgs:  []string{"-accel", "tcg", "-m", "512", "-nographic"},
-})
-```
-
-## Custom Environment Variables
+For advanced scenarios, you can access the machine interface directly:
 
 ```go
 bmc := bmctest.New(t, bmctest.Config{
     QEMUBin:  "qemu-system-x86_64",
     QEMUArgs: []string{"-accel", "tcg", "-m", "512", "-nographic"},
-    Env: map[string]string{
-        "VM_IPMI_ADDR": ":9002",   // Enable in-band IPMI
-        "VNC_ADDR":     "localhost:5900",
-    },
 })
+defer bmc.Cleanup()
+bmc.WaitReady(60 * time.Second)
+
+// Use the machine interface directly (bypasses Redfish)
+state, err := bmc.Machine.GetPowerState()
+boot := bmc.Machine.GetBootOverride()
 ```
 
